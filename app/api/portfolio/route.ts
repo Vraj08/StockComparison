@@ -25,6 +25,19 @@ const rollingYearReturns = (prices: MarketPrice[]) => {
   const window = Math.min(252, Math.max(20, Math.floor(prices.length / 3)));
   return prices.slice(window).map((row, i) => row.close / prices[i].close - 1).filter(Number.isFinite);
 };
+const PERIODS = [1, 2, 3, 5, 10, 15, 20] as const;
+const periodReturns = (prices: MarketPrice[]) => {
+  const latest = prices.at(-1);
+  if (!latest) return {} as Record<string, { total: number; annualized: number; startDate: string }>;
+  const latestTime = new Date(`${latest.date}T00:00:00Z`).getTime();
+  return Object.fromEntries(PERIODS.flatMap((years) => {
+    const target = latestTime - years * 365.2425 * 86400000;
+    const start = prices.find((row) => new Date(`${row.date}T00:00:00Z`).getTime() >= target);
+    if (!start || new Date(`${start.date}T00:00:00Z`).getTime() - target > 45 * 86400000) return [];
+    const total = latest.close / start.close - 1;
+    return [[String(years), { total, annualized: Math.pow(1 + total, 1 / years) - 1, startDate: start.date }]];
+  }));
+};
 const sentiment = (title: string) => {
   const value = title.toLowerCase();
   const positive = ["beats", "surges", "rallies", "growth", "upgrade", "record", "strong", "rises", "gain", "outperform", "profit"];
@@ -49,7 +62,7 @@ export async function POST(request: Request) {
     const positions = (body.positions || []).filter((item) => /^[A-Z0-9.-]{1,12}$/.test(item.ticker) && Number.isFinite(item.quantity) && item.quantity > 0).slice(0, 40);
     if (!positions.length) return Response.json({ error: "No positive stock or ETF positions were found in the file." }, { status: 400 });
     const end = new Date().toISOString().slice(0, 10);
-    const startDate = new Date(); startDate.setFullYear(startDate.getFullYear() - 5);
+    const startDate = new Date(); startDate.setFullYear(startDate.getFullYear() - 20); startDate.setDate(startDate.getDate() - 45);
     const start = startDate.toISOString().slice(0, 10);
     const results = [];
     for (let index = 0; index < positions.length; index += 5) {
@@ -63,7 +76,7 @@ export async function POST(request: Request) {
           const fullReturn = latest.close / data.prices[0].close - 1;
           const fallback = fullReturn / Math.max(1, data.prices.length / 252);
           const rate = (p: number) => clamp(rolling.length ? percentile(rolling, p) : fallback, -0.8, 1.5);
-          return { ticker: data.ticker, name: data.name, quantity: position.quantity, netInvested: Number(position.netInvested || 0), latestPrice: latest.close, priceDate: latest.date, marketValue: position.quantity * latest.close, oneYearReturn: latest.close / yearStart.close - 1, volatility: annualVolatility(data.prices), scenarios: { worst: rate(.05), bear: rate(.25), base: rate(.5), bull: rate(.75), best: rate(.95) } };
+          return { ticker: data.ticker, name: data.name, quantity: position.quantity, netInvested: Number(position.netInvested || 0), latestPrice: latest.close, priceDate: latest.date, marketValue: position.quantity * latest.close, oneYearReturn: latest.close / yearStart.close - 1, volatility: annualVolatility(data.prices), periodReturns: periodReturns(data.prices), scenarios: { worst: rate(.05), bear: rate(.25), base: rate(.5), bull: rate(.75), best: rate(.95) } };
         } catch (error) { return { ticker: position.ticker, quantity: position.quantity, error: error instanceof Error ? error.message : "Data unavailable" }; }
       }));
       results.push(...resolved);
@@ -73,6 +86,14 @@ export async function POST(request: Request) {
     const withWeights = valued.map((item) => ({ ...item, weight: totalValue ? item.marketValue / totalValue : 0 })).sort((a, b) => b.marketValue - a.marketValue);
     const scenarioKeys = ["worst", "bear", "base", "bull", "best"] as const;
     const scenarios = Object.fromEntries(scenarioKeys.map((key) => [key, withWeights.reduce((sum, item) => sum + item.weight * item.scenarios[key], 0)]));
+    const historicalReturns = PERIODS.map((years) => {
+      const available = withWeights.filter((item) => item.periodReturns[String(years)]);
+      const coveredWeight = available.reduce((sum, item) => sum + item.weight, 0);
+      if (!available.length || coveredWeight < .35) return { years, available: false, totalReturn: null, annualizedReturn: null, coverage: coveredWeight };
+      const totalReturn = available.reduce((sum, item) => sum + (item.weight / coveredWeight) * item.periodReturns[String(years)].total, 0);
+      const annualizedReturn = Math.pow(Math.max(.01, 1 + totalReturn), 1 / years) - 1;
+      return { years, available: true, totalReturn, annualizedReturn, coverage: coveredWeight };
+    });
     const volatility = withWeights.reduce((sum, item) => sum + item.weight * item.volatility, 0);
     const largestWeight = withWeights[0]?.weight || 0;
     const hhi = withWeights.reduce((sum, item) => sum + item.weight ** 2, 0);
@@ -80,7 +101,7 @@ export async function POST(request: Request) {
     const news = newsGroups.flat().filter((item, index, all) => item.url && all.findIndex((other) => other.url === item.url) === index).sort((a, b) => String(b.publishedAt).localeCompare(String(a.publishedAt))).slice(0, 14);
     const moodScore = news.reduce((sum, item) => sum + (item.sentiment === "positive" ? 1 : item.sentiment === "negative" ? -1 : 0), 0);
     const dcaFit = volatility >= .28 || largestWeight >= .25 || hhi >= .16;
-    return Response.json({ asOf: end, totalValue, positions: withWeights, unavailable: results.filter((item) => "error" in item), scenarios, portfolioVolatility: volatility, largestWeight, concentrationIndex: hhi, news, marketMood: moodScore >= 2 ? "More positive headlines" : moodScore <= -2 ? "More cautious headlines" : "Mixed headlines", strategy: { fit: dcaFit ? "DCA may fit this portfolio better" : "A blended approach may fit this portfolio", explanation: dcaFit ? "This portfolio has meaningful price swings or concentration. Spreading new money over time can reduce the risk of choosing one unlucky entry day, but it may lag if prices rise steadily." : "The portfolio is reasonably spread out based on this file. Historically, investing sooner gives money more time in the market, while DCA can make the path easier to tolerate." }, methodology: "Scenario rates are weighted historical percentiles of rolling returns from available daily prices. They are examples, not forecasts. News tone uses simple headline keywords and can miss context." }, { headers: { "Cache-Control": "private, max-age=300" } });
+    return Response.json({ asOf: end, totalValue, positions: withWeights, unavailable: results.filter((item) => "error" in item), scenarios, historicalReturns, portfolioVolatility: volatility, largestWeight, concentrationIndex: hhi, news, marketMood: moodScore >= 2 ? "More positive headlines" : moodScore <= -2 ? "More cautious headlines" : "Mixed headlines", strategy: { fit: dcaFit ? "DCA may fit this portfolio better" : "A blended approach may fit this portfolio", explanation: dcaFit ? "This portfolio has meaningful price swings or concentration. Spreading new money over time can reduce the risk of choosing one unlucky entry day, but it may lag if prices rise steadily." : "The portfolio is reasonably spread out based on this file. Historically, investing sooner gives money more time in the market, while DCA can make the path easier to tolerate." }, methodology: "Historical ranges use weighted rolling returns from available daily prices. Long-period return bars use the holdings that had data for the full period shown. They are examples, not forecasts. News tone uses simple headline keywords and can miss context." }, { headers: { "Cache-Control": "private, max-age=300" } });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "The portfolio could not be analyzed." }, { status: 500 });
   }
