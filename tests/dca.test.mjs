@@ -1,0 +1,12 @@
+import test from "node:test";
+import assert from "node:assert/strict";
+import { calculateMonth } from "../lib/dca-core.mjs";
+const rows = (values) => values.map((close, i) => ({ date: `2026-03-${String(i + 2).padStart(2, "0")}`, open: close, high: close, low: close, close, adjustedClose: close, volume: 1 }));
+for (const days of [19, 20, 21, 22, 23]) test(`${days}-trading-day month preserves the first-day budget`, () => { const result = calculateMonth(rows(Array(days).fill(100))); assert.equal(result.tradingDays, days); assert.ok(Math.abs(result.dailyInvestment * days - 100) < 1e-10); assert.ok(Math.abs(result.dcaShares - 1) < 1e-10); });
+test("rising prices favor the first-day share count", () => assert.ok(calculateMonth(rows([100, 110, 120])).dcaShares < 1));
+test("falling prices produce more than one DCA share", () => assert.ok(calculateMonth(rows([100, 90, 80])).dcaShares > 1));
+test("DCA cost is dollars divided by shares, not arithmetic price average", () => { const result = calculateMonth(rows([100, 50])); assert.equal(result.dcaShares, 1.5); assert.ok(Math.abs(result.dcaAverageCost - 66.6666666667) < 1e-8); assert.equal(result.averageMarketPrice, 75); });
+test("invalid missing price is rejected rather than invented", () => assert.throws(() => calculateMonth(rows([100, 0]))));
+test("volatile prices retain exact dollar-weighted cost basis", () => { const result = calculateMonth(rows([100, 72, 130, 83, 115])); assert.ok(Math.abs(result.dcaAverageCost - result.monthlyBudget / result.dcaShares) < 1e-12); });
+test("short-history ETF month calculates only returned trading days", () => assert.equal(calculateMonth(rows([42, 43, 41])).tradingDays, 3));
+test("split-adjusted input stays internally consistent", () => { const result = calculateMonth(rows([50, 51, 52, 49])); assert.ok(result.dcaShares > 0); assert.ok(Number.isFinite(result.dcaEndValue)); });
