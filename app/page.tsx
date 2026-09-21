@@ -2,7 +2,7 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Area, AreaChart, CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
-import { ArrowDownUp, BarChart3, ChevronRight, CircleAlert, Download, LoaderCircle, Moon, Search, Sparkles, Sun, TrendingUp, WalletCards } from "lucide-react";
+import { ArrowDownUp, BarChart3, BriefcaseBusiness, ChevronRight, CircleAlert, Download, LineChart as LineChartIcon, LoaderCircle, Moon, Search, Sparkles, Sun, TrendingUp, WalletCards } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -10,6 +10,7 @@ import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { calculateMonth, type MonthCalculation, type PriceField } from "@/lib/dca-core.mjs";
 import type { MarketDataResult, MarketPrice } from "@/lib/market-data";
+import { PortfolioDashboard } from "@/components/portfolio-dashboard";
 
 type MonthRow = MonthCalculation & { month: string; monthLabel: string };
 type SortKey = "month" | "firstPrice" | "tradingDays" | "dcaAverageCost" | "dcaShares" | "differenceShares" | "dcaGain";
@@ -46,12 +47,13 @@ export default function Home() {
   const [selected, setSelected] = useState<MonthRow | null>(null);
   const [sort, setSort] = useState<{ key: SortKey; direction: 1 | -1 }>({ key: "month", direction: -1 });
   const [dark, setDark] = useState(true);
+  const [view, setView] = useState<"portfolio" | "research">("portfolio");
 
   const load = useCallback(async (nextTicker = ticker, nextStart = start, nextEnd = end) => {
     setLoading(true); setError("");
     try {
       const response = await fetch(`/api/market?ticker=${encodeURIComponent(nextTicker.trim().toUpperCase())}&start=${nextStart}&end=${nextEnd}`);
-      const payload = await response.json();
+      const payload = await response.json() as MarketDataResult & { error?: string };
       if (!response.ok) throw new Error(payload.error || "Historical data could not be loaded.");
       setData(payload); setTicker(payload.ticker);
     } catch (cause) { setError(cause instanceof Error ? cause.message : "Historical data could not be loaded."); }
@@ -93,9 +95,10 @@ export default function Home() {
   }, [load]);
 
   return <main className="app-shell">
-    <header className="topbar"><div className="brand"><span className="brand-mark"><TrendingUp /></span><div><strong>DCA Research Lab</strong><span>Historical strategy workspace</span></div></div><div className="header-actions"><span className="live-pill"><i /> Market data on demand</span><Button variant="ghost" size="icon" aria-label="Toggle color theme" onClick={() => setDark((value) => !value)}>{dark ? <Sun /> : <Moon />}</Button></div></header>
+    <header className="topbar"><div className="brand"><span className="brand-mark"><TrendingUp /></span><div><strong>DCA Research Lab</strong><span>Investing explained simply</span></div></div><nav className="view-switch" aria-label="Choose a workspace"><button className={view === "portfolio" ? "active" : ""} onClick={() => setView("portfolio")}><BriefcaseBusiness/> My portfolio</button><button className={view === "research" ? "active" : ""} onClick={() => setView("research")}><LineChartIcon/> Stock research</button></nav><div className="header-actions"><span className="live-pill"><i /> Market data on demand</span><Button variant="ghost" size="icon" aria-label="Toggle color theme" onClick={() => setDark((value) => !value)}>{dark ? <Sun /> : <Moon />}</Button></div></header>
+    {view === "portfolio" ? <PortfolioDashboard /> : <>
     <section className="workspace">
-      <div className="page-heading"><div><span className="eyebrow"><Sparkles /> First-day share equivalent</span><h1>Was it better to buy now—or spread it out?</h1><p>Use actual trading days to compare one first-day share with the same budget invested evenly through each month.</p></div>{data && <div className="security-chip"><div><strong>{data.ticker}</strong><span>{data.name}</span></div><strong>{money(data.prices.at(-1)?.close || 0)}</strong><span>{shortDate(data.prices.at(-1)?.date || "")}</span></div>}</div>
+      <div className="page-heading"><div><span className="eyebrow"><Sparkles /> One stock or ETF at a time</span><h1>Buy it all at once, or spread it out?</h1><p>Pick a ticker and time period. We compare buying one share on the first market day with spending the same dollars little by little throughout each month.</p></div>{data && <div className="security-chip"><div><strong>{data.ticker}</strong><span>{data.name}</span></div><strong>{money(data.prices.at(-1)?.close || 0)}</strong><span>{shortDate(data.prices.at(-1)?.date || "")}</span></div>}</div>
       <section className="control-panel">
         <form onSubmit={onSubmit} className="search-control"><label htmlFor="ticker">Ticker</label><div className="search-box"><Search /><Input id="ticker" value={ticker} onChange={(event) => setTicker(event.target.value.toUpperCase())} placeholder="Enter ticker" autoComplete="off"/><Button type="submit" disabled={loading}>{loading ? <LoaderCircle className="spin" /> : "Analyze"}</Button></div></form>
         <div className="date-control"><label htmlFor="start">Start date</label><Input id="start" type="date" value={start} max={end} onChange={(event) => setStart(event.target.value)} /></div>
@@ -106,11 +109,11 @@ export default function Home() {
       {error && <div className="error-banner"><CircleAlert /><div><strong>Couldn’t load this analysis</strong><span>{error}</span></div><Button variant="outline" onClick={() => void load()}>Try again</Button></div>}
       {!error && <>
         <section className="stats-grid">
-          <StatCard label="Total period investment" value={summary ? money(summary.invested) : "—"} detail={`${months.length} monthly budgets`} />
-          <StatCard label="DCA shares accumulated" value={summary ? shares(summary.dcaShares) : "—"} detail="Fractional shares, no rounding" />
-          <StatCard label="Overall DCA cost basis" value={summary ? money(summary.invested / summary.dcaShares) : "—"} detail="Total dollars ÷ total shares" />
-          <StatCard label="Ending portfolio value" value={summary ? money(summary.dcaValue) : "—"} detail={summary ? `${signedMoney(summary.dcaValue - summary.invested)} total return` : "Awaiting data"} tone={summary && summary.dcaValue >= summary.invested ? "positive" : "negative"} />
-          <StatCard label="First-day comparison" value={summary ? signedMoney(summary.dcaValue - summary.lumpValue) : "—"} detail="DCA value minus monthly lump sums" tone={summary && summary.dcaValue >= summary.lumpValue ? "positive" : "negative"} />
+          <StatCard label="Money put in" value={summary ? money(summary.invested) : "—"} detail={`${months.length} monthly examples`} />
+          <StatCard label="Shares built with DCA" value={summary ? shares(summary.dcaShares) : "—"} detail="Includes fractional shares" />
+          <StatCard label="Average DCA price" value={summary ? money(summary.invested / summary.dcaShares) : "—"} detail="Money put in ÷ shares bought" />
+          <StatCard label="What DCA ended at" value={summary ? money(summary.dcaValue) : "—"} detail={summary ? `${signedMoney(summary.dcaValue - summary.invested)} gain or loss` : "Awaiting data"} tone={summary && summary.dcaValue >= summary.invested ? "positive" : "negative"} />
+          <StatCard label="DCA vs buying right away" value={summary ? signedMoney(summary.dcaValue - summary.lumpValue) : "—"} detail="Positive means DCA finished ahead" tone={summary && summary.dcaValue >= summary.lumpValue ? "positive" : "negative"} />
         </section>
         <section className="chart-grid">
           <article className="panel chart-panel"><div className="panel-heading"><div><span>Market history</span><h2>{data?.ticker || "Ticker"} closing price</h2></div><BarChart3 /></div><div className="chart-wrap">{loading ? <div className="chart-loading"><LoaderCircle className="spin" /> Loading verified trading days…</div> : <ResponsiveContainer width="100%" height="100%"><AreaChart data={priceChart}><defs><linearGradient id="priceFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stopColor="#52e0c4" stopOpacity={.35}/><stop offset="100%" stopColor="#52e0c4" stopOpacity={0}/></linearGradient></defs><CartesianGrid strokeDasharray="3 3" vertical={false} stroke="var(--grid)"/><XAxis dataKey="date" minTickGap={54} tickFormatter={(v) => v.slice(0,7)} tick={{ fill: "var(--muted-foreground)", fontSize: 11 }}/><YAxis domain={["auto","auto"]} tickFormatter={(v) => `$${Math.round(v)}`} tick={{ fill: "var(--muted-foreground)", fontSize: 11 }} width={52}/><Tooltip contentStyle={{ background: "var(--popover)", border: "1px solid var(--border)", borderRadius: 10 }} formatter={(v) => money(Number(v))}/><Area type="monotone" dataKey="price" stroke="#52e0c4" strokeWidth={2} fill="url(#priceFill)"/></AreaChart></ResponsiveContainer>}</div></article>
@@ -122,5 +125,6 @@ export default function Home() {
       <footer><p>{data?.methodology || "No price data loaded."}</p><p>For personal research and educational purposes only. Historical performance does not guarantee future results. This application does not provide investment advice.</p><span>Data source: {data?.provider || "Yahoo Finance"} · Missing records are never fabricated.</span></footer>
     </section>
     <Sheet open={Boolean(selected)} onOpenChange={(open) => !open && setSelected(null)}><SheetContent className="detail-sheet"><SheetHeader><SheetTitle>{selected?.monthLabel} · Daily purchases</SheetTitle><SheetDescription>{selected && `${data?.ticker} · ${selected.tradingDays} actual trading days · ${money(selected.dailyInvestment)} invested per day`}</SheetDescription></SheetHeader>{selected && <div className="detail-content"><div className="detail-stats"><StatCard label="Monthly budget" value={money(selected.monthlyBudget)} detail="First trading-day price"/><StatCard label="DCA shares" value={shares(selected.dcaShares)} detail={`${selected.differenceShares >= 0 ? "+" : ""}${shares(selected.differenceShares)} vs 1 share`} tone={selected.differenceShares >= 0 ? "positive" : "negative"}/><StatCard label="DCA average cost" value={money(selected.dcaAverageCost)} detail={`Average market price: ${money(selected.averageMarketPrice)}`}/></div><Button variant="outline" size="sm" onClick={() => downloadCsv(`${data?.ticker}-${selected.month}-daily-dca.csv`, selected.daily)}><Download /> Export daily CSV</Button><Table><TableHeader><TableRow><TableHead>Date</TableHead><TableHead>Open</TableHead><TableHead>Close</TableHead><TableHead>Price used</TableHead><TableHead>Daily investment</TableHead><TableHead>Shares</TableHead><TableHead>Cumulative investment</TableHead><TableHead>Cumulative shares</TableHead><TableHead>Running cost</TableHead></TableRow></TableHeader><TableBody>{selected.daily.map((row) => <TableRow key={row.date}><TableCell>{shortDate(row.date)}</TableCell><TableCell>{money(row.open)}</TableCell><TableCell>{money(row.close)}</TableCell><TableCell>{money(row.priceUsed)}</TableCell><TableCell>{money(row.dailyInvestment)}</TableCell><TableCell>{shares(row.sharesPurchased)}</TableCell><TableCell>{money(row.cumulativeInvestment)}</TableCell><TableCell>{shares(row.cumulativeShares)}</TableCell><TableCell>{money(row.runningAverageCost)}</TableCell></TableRow>)}</TableBody></Table></div>}</SheetContent></Sheet>
+    </>}
   </main>;
 }
