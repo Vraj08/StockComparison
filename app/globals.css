@@ -359,6 +359,14 @@ details[open] > summary svg { transform: rotate(180deg); }
 .holding-math details > summary { cursor: pointer; list-style: none; font-family: var(--font-mono); font-size: .72rem; }
 .holding-math details > summary span, .holding-math details > summary b { text-align: right; }
 .holding-math details > p { margin: 0; padding: .1rem .75rem .7rem; color: var(--muted-foreground); font-size: .67rem; line-height: 1.5; }
+.holding-news-groups { display: grid; gap: 1rem; padding: 1.1rem; }
+.holding-news-groups > section { overflow: hidden; border: 1px solid var(--border); border-radius: 13px; background: var(--background); }
+.holding-news-heading { display: flex; justify-content: space-between; gap: 1rem; align-items: center; padding: .85rem 1rem; border-bottom: 1px solid var(--border); background: var(--muted); }
+.holding-news-heading > div { display: flex; flex-direction: column; min-width: 0; }
+.holding-news-heading strong { color: var(--primary); font-size: .82rem; }
+.holding-news-heading span, .holding-news-heading small { color: var(--muted-foreground); font-size: .68rem; }
+.holding-news-heading span { margin-top: .12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.holding-news-groups .news-grid { grid-template-columns: repeat(2,1fr); padding: .75rem; }
 .scenario-meaning { margin-top: .7rem; border-top: 1px solid var(--border); }
 .scenario-meaning summary { padding: .65rem 0 0; color: var(--muted-foreground); font-size: .68rem; }
 .scenario-meaning p { margin-top: .5rem; }
@@ -402,6 +410,8 @@ details[open] > summary svg { transform: rotate(180deg); }
   .downside-signals, .plain-steps { grid-template-columns: 1fr; }
   .holding-math { overflow-x: auto; }
   .holding-math-head, .holding-math details > summary { min-width: 590px; }
+  .holding-news-heading { align-items: flex-start; flex-direction: column; }
+  .holding-news-groups .news-grid { grid-template-columns: 1fr; }
 }
 
 /* ── Dividend Toggle & HYSA ── */
