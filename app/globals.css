@@ -420,3 +420,17 @@ details[open] > summary svg { transform: rotate(180deg); }
 .div-toggle-label input { margin-top: .2rem; }
 .div-toggle-label strong { color: var(--foreground); }
 .hysa-note { color: var(--primary); font-size: .65rem; }
+
+/* Portfolio-specific forecast comparison */
+.horizon-matrix { margin: 1rem; border: 1px solid var(--border); border-radius: 13px; overflow: hidden; background: var(--background); }
+.horizon-matrix-title { padding: .9rem 1rem; border-bottom: 1px solid var(--border); }
+.horizon-matrix-title strong, .horizon-matrix-title span { display: block; }
+.horizon-matrix-title span, .horizon-matrix > p { color: var(--muted-foreground); font-size: .72rem; line-height: 1.5; }
+.horizon-matrix-scroll { overflow-x: auto; }
+.horizon-row { min-width: 760px; display: grid; grid-template-columns: minmax(130px,1.3fr) repeat(7,minmax(76px,1fr)); align-items: center; border-top: 1px solid var(--border); }
+.horizon-row:first-child { border-top: 0; }
+.horizon-row > * { padding: .7rem .75rem; text-align: right; font-family: var(--font-mono); font-size: .75rem; }
+.horizon-row > :first-child { text-align: left; }
+.horizon-row small { display: block; margin-top: .15rem; color: var(--muted-foreground); font: 400 .62rem/1.3 var(--font-sans); }
+.horizon-head { background: var(--muted); color: var(--muted-foreground); font-weight: 700; }
+.horizon-matrix > p { margin: 0; padding: .75rem 1rem; border-top: 1px solid var(--border); }

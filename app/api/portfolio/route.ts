@@ -7,7 +7,7 @@ type NewsItem = { title?: string; link?: string; publisher?: string; providerPub
 type SearchQuote = { symbol?: string; sector?: string; industry?: string; quoteType?: string; longname?: string; shortname?: string };
 type ScenarioKey = "worst" | "bear" | "base" | "bull" | "best";
 type ScenarioCurve = Record<ScenarioKey | "average" | "realistic", number> & {
-  source: "rolling history" | "history-adjusted model";
+  source: "holding history and current growth";
   samples: number;
   math: { allocationWeightedRate: number; riskAdjustment: number; planningRate: number };
 };
@@ -84,37 +84,14 @@ function rollingCagrs(prices: MarketPrice[], years: number) {
   return samples;
 }
 
-function makeScenarioCurve(items: Array<{ weight: number; prices: MarketPrice[]; oneYearReturns: number[] }>, years: number, concentrationIndex: number, portfolioVolatility: number, allocationWeightedRate: number, riskAdjustment: number, planningRate: number): ScenarioCurve {
-  const byHolding = items.map((item) => ({ weight: item.weight, values: rollingCagrs(item.prices, years) })).filter((item) => item.values.length);
-  const coveredWeight = byHolding.reduce((sum, item) => sum + item.weight, 0);
-  const sampleCount = byHolding.length ? Math.min(...byHolding.map((item) => item.values.length)) : 0;
-  let portfolioSamples: number[] = [];
-  if (coveredWeight >= .35 && sampleCount >= 4) {
-    portfolioSamples = Array.from({ length: sampleCount }, (_, index) => byHolding.reduce((sum, item) => {
-      const sourceIndex = Math.round(index * (item.values.length - 1) / Math.max(1, sampleCount - 1));
-      return sum + (item.weight / coveredWeight) * item.values[sourceIndex];
-    }, 0));
-  }
-  const holdingCagrs = items.map((item) => {
-    const first = item.prices[0], last = item.prices.at(-1);
-    if (!first || !last) return .07 * item.weight;
-    const elapsedYears = Math.max(1, (new Date(`${last.date}T00:00:00Z`).getTime() - new Date(`${first.date}T00:00:00Z`).getTime()) / (365.2425 * 86400000));
-    const growth = returnPrice(last) / returnPrice(first);
-    return (growth > 0 ? Math.pow(growth, 1 / elapsedYears) - 1 : .07) * item.weight;
-  });
-  const observedLongRun = holdingCagrs.reduce((sum, value) => sum + value, 0);
-  const historyConfidence = clamp(12 / Math.max(12, years), .35, 1);
-  const longRun = clamp(observedLongRun * historyConfidence + .07 * (1 - historyConfidence), -.05, .25);
-  const modeled = (z: number) => clamp(longRun + z * portfolioVolatility / Math.sqrt(Math.max(1, years)), -.8, 1.5);
-  const historical = portfolioSamples.length >= 4;
-  const q = (p: number, z: number) => historical ? percentile(portfolioSamples, p) : modeled(z);
-  const average = historical ? mean(portfolioSamples) : modeled(0);
-  const base = q(.5, 0);
-  const realistic = planningRate;
+function makeScenarioCurve(items: Array<{ weight: number; forecastByHorizon: Record<string, ReturnType<typeof holdingForecast>> }>, years: number, allocationWeightedRate: number, riskAdjustment: number, planningRate: number): ScenarioCurve {
+  const forecast = (item: typeof items[number]) => item.forecastByHorizon[String(years)];
+  const weighted = (key: ScenarioKey | "average") => items.reduce((sum, item) => sum + item.weight * forecast(item).outcomes[key], 0);
+  const samples = items.reduce((sum, item) => sum + forecast(item).samples, 0);
   return {
-    worst: q(.05, -1.65), bear: q(.25, -.68), base, bull: q(.75, .68), best: q(.95, 1.65),
-    average: clamp(average, -.5, .8), realistic,
-    source: historical ? "rolling history" : "history-adjusted model", samples: portfolioSamples.length,
+    worst: weighted("worst"), bear: weighted("bear"), base: weighted("base"), bull: weighted("bull"), best: weighted("best"),
+    average: weighted("average"), realistic: planningRate,
+    source: "holding history and current growth", samples,
     math: { allocationWeightedRate, riskAdjustment, planningRate },
   };
 }
@@ -124,17 +101,28 @@ function holdingForecast(prices: MarketPrice[], oneYearReturn: number, volatilit
   const elapsedYears = Math.max(1, (new Date(`${latest.date}T00:00:00Z`).getTime() - new Date(`${first.date}T00:00:00Z`).getTime()) / (365.2425 * 86400000));
   const longTermGrowth = clamp(Math.pow(returnPrice(latest) / returnPrice(first), 1 / elapsedYears) - 1, -.15, .25);
   const history = rollingCagrs(prices, years);
-  const historicalGrowth = clamp(history.length >= 4 ? percentile(history, .5) : longTermGrowth, -.25, .30);
+  const annualHistory = rollingYearReturns(prices);
+  const annualMedian = annualHistory.length ? percentile(annualHistory, .5) : longTermGrowth;
+  const historyValue = (p: number) => history.length >= 4
+    ? percentile(history, p)
+    : longTermGrowth + (percentile(annualHistory.length ? annualHistory : [longTermGrowth], p) - longTermGrowth) / Math.sqrt(Math.max(1, years));
+  const historicalGrowth = clamp(historyValue(.5), -.25, .30);
   const recentGrowth = clamp(oneYearReturn, -.5, .5);
   const recentWeight = clamp(.30 / Math.sqrt(years), .05, .30);
   const longTermWeight = .30;
   const historicalWeight = 1 - recentWeight - longTermWeight;
   const beforeRisk = recentWeight * recentGrowth + historicalWeight * historicalGrowth + longTermWeight * longTermGrowth;
   const riskDeduction = clamp(.20 * volatility ** 2 / Math.sqrt(years), 0, .05);
+  const blendedOutcome = (p: number) => clamp(recentWeight * recentGrowth + historicalWeight * clamp(historyValue(p), -.60, .80) + longTermWeight * longTermGrowth, -.60, .80);
+  const outcomes = {
+    worst: blendedOutcome(.05), bear: blendedOutcome(.25), base: blendedOutcome(.50), bull: blendedOutcome(.75), best: blendedOutcome(.95),
+    average: clamp(recentWeight * recentGrowth + historicalWeight * (history.length >= 4 ? mean(history) : annualMedian) + longTermWeight * longTermGrowth, -.60, .80),
+  };
   return {
     annualRate: clamp(beforeRisk - riskDeduction, -.20, .25), historicalGrowth, recentGrowth, longTermGrowth,
     recentWeight, historicalWeight, longTermWeight, riskDeduction,
-    source: history.length >= 4 ? `${years}-year holding history` : "available history adjusted to this horizon",
+    outcomes,
+    source: history.length >= 4 ? `${years}-year periods from this holding` : `this holding’s yearly returns adjusted for ${years} years`,
     samples: history.length,
   };
 }
@@ -198,7 +186,7 @@ export async function POST(request: Request) {
       const allocationWeightedRate = withEntryReturns.reduce((sum, item) => sum + item.weight * item.forecastByHorizon[String(horizon)].annualRate, 0);
       const riskAdjustment = baseRiskAdjustment / Math.sqrt(horizon);
       const planningRate = clamp(allocationWeightedRate - riskAdjustment, -.10, .18);
-      return [String(horizon), makeScenarioCurve(withEntryReturns, horizon, concentrationIndex, portfolioVolatility, allocationWeightedRate, riskAdjustment, planningRate)];
+      return [String(horizon), makeScenarioCurve(withEntryReturns, horizon, allocationWeightedRate, riskAdjustment, planningRate)];
     }));
 
     const historicalReturns = PERIODS.map((years) => {
@@ -273,7 +261,7 @@ export async function POST(request: Request) {
       risk: { score: riskScore, label: riskScore >= 70 ? "High" : riskScore >= 45 ? "Moderate" : "Lower", realisticDownside, largestHistoricalHoldingDrawdown: Math.abs(withEntryReturns.reduce((sum, item) => sum + item.weight * item.maxDrawdown, 0)), math: { ...riskMath, downside: downsideMath } },
       diversification: { score: diversificationScore, label: diversificationScore >= 75 ? "Broad" : diversificationScore >= 50 ? "Moderate" : "Concentrated", effectiveHoldings, knownSectorWeight, sectorCount: sectors.filter((item) => item.sector !== "Unclassified").length, math: diversificationMath },
       news, newsByHolding, marketMood: moodScore >= 2 ? "More positive headlines" : moodScore <= -2 ? "More cautious headlines" : "Mixed headlines", strategy,
-      methodology: "Rates use the current market-value weights and each holding’s adjusted-price history. Scenario rates change with the selected horizon; where too few full rolling periods exist, a history-adjusted model narrows uncertainty over longer horizons. Historical growth reconstructs today’s allocation backward and is not a record of what you actually owned. Forecasts are ranges, not promises.",
+      methodology: "Every displayed rate starts with each holding’s own adjusted-price history and current one-year return. The site estimates that holding for the selected horizon, multiplies it by its current share of the uploaded portfolio, and adds the contributions. When a holding does not have a full 40- or 50-year record, its own observed yearly range is narrowed for the longer horizon; no generic market-return assumption is substituted. Forecasts are data-based estimates, not promises.",
     }, { headers: { "Cache-Control": "private, max-age=300" } });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "The portfolio could not be analyzed." }, { status: 500 });
