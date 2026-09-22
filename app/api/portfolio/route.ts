@@ -3,9 +3,13 @@ import { marketDataProvider, type MarketPrice } from "@/lib/market-data";
 export const dynamic = "force-dynamic";
 
 type PositionInput = { ticker: string; quantity: number; netInvested?: number };
-type NewsItem = { title?: string; link?: string; publisher?: string; providerPublishTime?: number; relatedTickers?: string[] };
+type NewsItem = { title?: string; link?: string; publisher?: string; providerPublishTime?: number };
+type SearchQuote = { symbol?: string; sector?: string; industry?: string; quoteType?: string; longname?: string; shortname?: string };
+type ScenarioKey = "worst" | "bear" | "base" | "bull" | "best";
+type ScenarioCurve = Record<ScenarioKey | "average" | "realistic", number> & { source: "rolling history" | "history-adjusted model"; samples: number };
 
 const clamp = (value: number, low: number, high: number) => Math.min(high, Math.max(low, value));
+const mean = (values: number[]) => values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0;
 const percentile = (values: number[], p: number) => {
   if (!values.length) return 0;
   const sorted = [...values].sort((a, b) => a - b);
@@ -13,19 +17,25 @@ const percentile = (values: number[], p: number) => {
   const lower = Math.floor(index), upper = Math.ceil(index);
   return lower === upper ? sorted[lower] : sorted[lower] + (sorted[upper] - sorted[lower]) * (index - lower);
 };
+const returnPrice = (row: MarketPrice) => row.adjustedClose && row.adjustedClose > 0 ? row.adjustedClose : row.close;
 const annualVolatility = (prices: MarketPrice[]) => {
-  const returns = prices.slice(1).map((row, i) => Math.log(row.close / prices[i].close)).filter(Number.isFinite);
+  const returns = prices.slice(1).map((row, i) => Math.log(returnPrice(row) / returnPrice(prices[i]))).filter(Number.isFinite);
   if (returns.length < 2) return 0;
-  const mean = returns.reduce((sum, value) => sum + value, 0) / returns.length;
-  const variance = returns.reduce((sum, value) => sum + (value - mean) ** 2, 0) / (returns.length - 1);
+  const average = mean(returns);
+  const variance = returns.reduce((sum, value) => sum + (value - average) ** 2, 0) / (returns.length - 1);
   return Math.sqrt(variance) * Math.sqrt(252);
 };
 const rollingYearReturns = (prices: MarketPrice[]) => {
-  if (prices.length < 40) return [];
-  const window = Math.min(252, Math.max(20, Math.floor(prices.length / 3)));
-  return prices.slice(window).map((row, i) => row.close / prices[i].close - 1).filter(Number.isFinite);
+  if (prices.length < 252) return [];
+  return prices.slice(252).map((row, i) => returnPrice(row) / returnPrice(prices[i]) - 1).filter(Number.isFinite);
 };
-const PERIODS = [1, 2, 3, 5, 10, 15, 20] as const;
+const maxDrawdown = (prices: MarketPrice[]) => {
+  let peak = 0, worst = 0;
+  prices.forEach((row) => { const price = returnPrice(row); peak = Math.max(peak, price); if (peak) worst = Math.min(worst, price / peak - 1); });
+  return worst;
+};
+
+const PERIODS = [1, 2, 3, 5, 10, 15, 20, 30] as const;
 const periodReturns = (prices: MarketPrice[]) => {
   const latest = prices.at(-1);
   if (!latest) return {} as Record<string, { total: number; annualized: number; startDate: string }>;
@@ -34,8 +44,8 @@ const periodReturns = (prices: MarketPrice[]) => {
     const target = latestTime - years * 365.2425 * 86400000;
     const start = prices.find((row) => new Date(`${row.date}T00:00:00Z`).getTime() >= target);
     if (!start || new Date(`${start.date}T00:00:00Z`).getTime() - target > 45 * 86400000) return [];
-    const total = latest.close / start.close - 1;
-    return [[String(years), { total, annualized: Math.pow(1 + total, 1 / years) - 1, startDate: start.date }]];
+    const total = returnPrice(latest) / returnPrice(start) - 1;
+    return [[String(years), { total, annualized: Math.pow(Math.max(.01, 1 + total), 1 / years) - 1, startDate: start.date }]];
   }));
 };
 const sentiment = (title: string) => {
@@ -46,14 +56,63 @@ const sentiment = (title: string) => {
   return score > 0 ? "positive" : score < 0 ? "negative" : "neutral";
 };
 
-async function getNews(ticker: string) {
+async function getTickerContext(ticker: string) {
   try {
-    const url = `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(ticker)}&quotesCount=1&newsCount=4&enableFuzzyQuery=false&enableResearchReports=false`;
+    const url = `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(ticker)}&quotesCount=5&newsCount=4&enableFuzzyQuery=false&enableResearchReports=false`;
     const response = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 DCAResearchLab/1.0", Accept: "application/json" } });
-    if (!response.ok) return [];
-    const payload = await response.json() as { news?: NewsItem[] };
-    return (payload.news || []).map((item) => ({ ticker, title: item.title || "Untitled market story", url: item.link || "", publisher: item.publisher || "Market source", publishedAt: item.providerPublishTime ? new Date(item.providerPublishTime * 1000).toISOString() : null, sentiment: sentiment(item.title || "") }));
-  } catch { return []; }
+    if (!response.ok) return { news: [], sector: "Unclassified", industry: "", profileName: "" };
+    const payload = await response.json() as { news?: NewsItem[]; quotes?: SearchQuote[] };
+    const quote = (payload.quotes || []).find((item) => item.symbol?.toUpperCase() === ticker.toUpperCase());
+    const sector = quote?.sector || (quote?.quoteType === "ETF" || quote?.quoteType === "MUTUALFUND" ? "Funds & ETFs" : "Unclassified");
+    const news = (payload.news || []).map((item) => ({ ticker, title: item.title || "Untitled market story", url: item.link || "", publisher: item.publisher || "Market source", publishedAt: item.providerPublishTime ? new Date(item.providerPublishTime * 1000).toISOString() : null, sentiment: sentiment(item.title || "") }));
+    return { news, sector, industry: quote?.industry || "", profileName: quote?.longname || quote?.shortname || "" };
+  } catch { return { news: [], sector: "Unclassified", industry: "", profileName: "" }; }
+}
+
+function rollingCagrs(prices: MarketPrice[], years: number) {
+  const window = Math.max(200, Math.round(years * 252));
+  if (prices.length <= window) return [];
+  const samples: number[] = [];
+  for (let end = window; end < prices.length; end += 21) {
+    const total = returnPrice(prices[end]) / returnPrice(prices[end - window]);
+    if (total > 0 && Number.isFinite(total)) samples.push(Math.pow(total, 1 / years) - 1);
+  }
+  return samples;
+}
+
+function makeScenarioCurve(items: Array<{ weight: number; prices: MarketPrice[]; oneYearReturns: number[] }>, years: number, concentrationIndex: number, portfolioVolatility: number): ScenarioCurve {
+  const byHolding = items.map((item) => ({ weight: item.weight, values: rollingCagrs(item.prices, years) })).filter((item) => item.values.length);
+  const coveredWeight = byHolding.reduce((sum, item) => sum + item.weight, 0);
+  const sampleCount = byHolding.length ? Math.min(...byHolding.map((item) => item.values.length)) : 0;
+  let portfolioSamples: number[] = [];
+  if (coveredWeight >= .35 && sampleCount >= 4) {
+    portfolioSamples = Array.from({ length: sampleCount }, (_, index) => byHolding.reduce((sum, item) => {
+      const sourceIndex = Math.round(index * (item.values.length - 1) / Math.max(1, sampleCount - 1));
+      return sum + (item.weight / coveredWeight) * item.values[sourceIndex];
+    }, 0));
+  }
+  const holdingCagrs = items.map((item) => {
+    const first = item.prices[0], last = item.prices.at(-1);
+    if (!first || !last) return .07 * item.weight;
+    const elapsedYears = Math.max(1, (new Date(`${last.date}T00:00:00Z`).getTime() - new Date(`${first.date}T00:00:00Z`).getTime()) / (365.2425 * 86400000));
+    const growth = returnPrice(last) / returnPrice(first);
+    return (growth > 0 ? Math.pow(growth, 1 / elapsedYears) - 1 : .07) * item.weight;
+  });
+  const observedLongRun = holdingCagrs.reduce((sum, value) => sum + value, 0);
+  const historyConfidence = clamp(12 / Math.max(12, years), .35, 1);
+  const longRun = clamp(observedLongRun * historyConfidence + .07 * (1 - historyConfidence), -.05, .25);
+  const modeled = (z: number) => clamp(longRun + z * portfolioVolatility / Math.sqrt(Math.max(1, years)), -.8, 1.5);
+  const historical = portfolioSamples.length >= 4;
+  const q = (p: number, z: number) => historical ? percentile(portfolioSamples, p) : modeled(z);
+  const average = historical ? mean(portfolioSamples) : modeled(0);
+  const base = q(.5, 0);
+  const diversificationPenalty = Math.max(0, concentrationIndex - .12) * .12;
+  const realistic = clamp((base * .55) + (average * .25) + (.07 * .20) - diversificationPenalty, -.2, .35);
+  return {
+    worst: q(.05, -1.65), bear: q(.25, -.68), base, bull: q(.75, .68), best: q(.95, 1.65),
+    average: clamp(average, -.5, .8), realistic,
+    source: historical ? "rolling history" : "history-adjusted model", samples: portfolioSamples.length,
+  };
 }
 
 export async function POST(request: Request) {
@@ -61,47 +120,85 @@ export async function POST(request: Request) {
     const body = await request.json() as { positions?: PositionInput[] };
     const positions = (body.positions || []).filter((item) => /^[A-Z0-9.-]{1,12}$/.test(item.ticker) && Number.isFinite(item.quantity) && item.quantity > 0).slice(0, 40);
     if (!positions.length) return Response.json({ error: "No positive stock or ETF positions were found in the file." }, { status: 400 });
+
     const end = new Date().toISOString().slice(0, 10);
-    const startDate = new Date(); startDate.setFullYear(startDate.getFullYear() - 20); startDate.setDate(startDate.getDate() - 45);
+    const startDate = new Date(); startDate.setFullYear(startDate.getFullYear() - 31); startDate.setDate(startDate.getDate() - 45);
     const start = startDate.toISOString().slice(0, 10);
     const results = [];
     for (let index = 0; index < positions.length; index += 5) {
       const batch = positions.slice(index, index + 5);
       const resolved = await Promise.all(batch.map(async (position) => {
         try {
-          const data = await marketDataProvider.getHistoricalPrices(position.ticker, start, end);
+          const [data, context] = await Promise.all([marketDataProvider.getHistoricalPrices(position.ticker, start, end), getTickerContext(position.ticker)]);
           const latest = data.prices.at(-1)!;
-          const yearStart = data.prices.find((row) => row.date >= new Date(Date.now() - 365 * 86400000).toISOString().slice(0, 10)) || data.prices[0];
+          const oneYearStartTarget = Date.now() - 365.2425 * 86400000;
+          const yearStart = data.prices.find((row) => new Date(`${row.date}T00:00:00Z`).getTime() >= oneYearStartTarget) || data.prices[0];
           const rolling = rollingYearReturns(data.prices);
-          const fullReturn = latest.close / data.prices[0].close - 1;
-          const fallback = fullReturn / Math.max(1, data.prices.length / 252);
-          const rate = (p: number) => clamp(rolling.length ? percentile(rolling, p) : fallback, -0.8, 1.5);
-          return { ticker: data.ticker, name: data.name, quantity: position.quantity, netInvested: Number(position.netInvested || 0), latestPrice: latest.close, priceDate: latest.date, marketValue: position.quantity * latest.close, oneYearReturn: latest.close / yearStart.close - 1, volatility: annualVolatility(data.prices), periodReturns: periodReturns(data.prices), scenarios: { worst: rate(.05), bear: rate(.25), base: rate(.5), bull: rate(.75), best: rate(.95) } };
+          const oneYearReturn = returnPrice(latest) / returnPrice(yearStart) - 1;
+          const historicalMedian = percentile(rolling, .5);
+          const nextYearBase = clamp(.55 * historicalMedian + .25 * oneYearReturn + .20 * .07, -.5, .8);
+          return {
+            ticker: data.ticker, name: context.profileName || data.name, quantity: position.quantity, netInvested: Number(position.netInvested || 0), latestPrice: latest.close, priceDate: latest.date,
+            marketValue: position.quantity * latest.close, oneYearReturn, volatility: annualVolatility(data.prices), maxDrawdown: maxDrawdown(data.prices), periodReturns: periodReturns(data.prices),
+            nextYear: { low: clamp(percentile(rolling, .25), -.8, 1.5), base: nextYearBase, high: clamp(percentile(rolling, .75), -.8, 1.5) },
+            sector: context.sector, industry: context.industry, news: context.news, prices: data.prices, oneYearReturns: rolling,
+          };
         } catch (error) { return { ticker: position.ticker, quantity: position.quantity, error: error instanceof Error ? error.message : "Data unavailable" }; }
       }));
       results.push(...resolved);
     }
+
     const valued = results.filter((item): item is Exclude<typeof item, { error: string }> => !("error" in item) && Number.isFinite(item.marketValue));
     const totalValue = valued.reduce((sum, item) => sum + item.marketValue, 0);
-    const withWeights = valued.map((item) => ({ ...item, weight: totalValue ? item.marketValue / totalValue : 0 })).sort((a, b) => b.marketValue - a.marketValue);
-    const scenarioKeys = ["worst", "bear", "base", "bull", "best"] as const;
-    const scenarios = Object.fromEntries(scenarioKeys.map((key) => [key, withWeights.reduce((sum, item) => sum + item.weight * item.scenarios[key], 0)]));
+    if (!valued.length || !totalValue) return Response.json({ error: "Market data was unavailable for every holding in this file." }, { status: 422 });
+    const withWeights = valued.map((item) => ({ ...item, weight: item.marketValue / totalValue })).sort((a, b) => b.marketValue - a.marketValue);
+    const portfolioVolatility = withWeights.reduce((sum, item) => sum + item.weight * item.volatility, 0);
+    const largestWeight = withWeights[0]?.weight || 0;
+    const concentrationIndex = withWeights.reduce((sum, item) => sum + item.weight ** 2, 0);
+    const scenarioCurves = Object.fromEntries(Array.from({ length: 50 }, (_, index) => {
+      const horizon = index + 1;
+      return [String(horizon), makeScenarioCurve(withWeights, horizon, concentrationIndex, portfolioVolatility)];
+    }));
+
     const historicalReturns = PERIODS.map((years) => {
       const available = withWeights.filter((item) => item.periodReturns[String(years)]);
       const coveredWeight = available.reduce((sum, item) => sum + item.weight, 0);
-      if (!available.length || coveredWeight < .35) return { years, available: false, totalReturn: null, annualizedReturn: null, coverage: coveredWeight };
+      if (!available.length || coveredWeight < .35) return { years, available: false, totalReturn: null, annualizedReturn: null, coverage: coveredWeight, hypotheticalValue: null };
       const totalReturn = available.reduce((sum, item) => sum + (item.weight / coveredWeight) * item.periodReturns[String(years)].total, 0);
       const annualizedReturn = Math.pow(Math.max(.01, 1 + totalReturn), 1 / years) - 1;
-      return { years, available: true, totalReturn, annualizedReturn, coverage: coveredWeight };
+      return { years, available: true, totalReturn, annualizedReturn, coverage: coveredWeight, hypotheticalValue: totalValue * (1 + totalReturn) };
     });
-    const volatility = withWeights.reduce((sum, item) => sum + item.weight * item.volatility, 0);
-    const largestWeight = withWeights[0]?.weight || 0;
-    const hhi = withWeights.reduce((sum, item) => sum + item.weight ** 2, 0);
-    const newsGroups = await Promise.all(withWeights.slice(0, 7).map((item) => getNews(item.ticker)));
-    const news = newsGroups.flat().filter((item, index, all) => item.url && all.findIndex((other) => other.url === item.url) === index).sort((a, b) => String(b.publishedAt).localeCompare(String(a.publishedAt))).slice(0, 14);
+
+    const sectors = Object.entries(withWeights.reduce<Record<string, number>>((map, item) => { map[item.sector] = (map[item.sector] || 0) + item.weight; return map; }, {})).map(([sector, weight]) => ({ sector, weight })).sort((a, b) => b.weight - a.weight);
+    const knownSectorWeight = sectors.filter((item) => item.sector !== "Unclassified").reduce((sum, item) => sum + item.weight, 0);
+    const effectiveHoldings = concentrationIndex ? 1 / concentrationIndex : 0;
+    const sectorHhi = sectors.reduce((sum, item) => sum + item.weight ** 2, 0);
+    const riskScore = Math.round(clamp((portfolioVolatility / .5) * 45 + largestWeight * 35 + concentrationIndex * 55, 0, 100));
+    const diversificationScore = Math.round(clamp((1 - concentrationIndex) * 52 + Math.min(1, effectiveHoldings / 10) * 28 + (1 - sectorHhi) * 20, 0, 100));
+    const curve1 = scenarioCurves["1"];
+    const realisticDownside = clamp(Math.max(.05, -curve1.bear, portfolioVolatility * .72 + largestWeight * .08), .05, .65);
+    const recommended = riskScore >= 65 || largestWeight >= .3 ? "dailyDca" : riskScore <= 35 && diversificationScore >= 65 ? "alwaysIn" : "blend";
+    const strategy = {
+      recommended,
+      fit: recommended === "dailyDca" ? "Daily DCA may fit best" : recommended === "alwaysIn" ? "Always-In may fit best" : "A 50/50 blend may fit best",
+      explanation: recommended === "dailyDca"
+        ? `A ${riskScore}/100 risk score and ${Math.round(largestWeight * 100)}% largest position make entry timing more important. Smaller scheduled purchases reduce single-day timing risk.`
+        : recommended === "alwaysIn"
+          ? `A ${riskScore}/100 risk score and ${diversificationScore}/100 diversification score make the portfolio less dependent on one holding. Investing sooner maximizes time in the market, though losses are still possible.`
+          : `The portfolio sits between the two extremes at ${riskScore}/100 risk. Investing half now and phasing in half keeps meaningful market exposure while retaining cash for volatility.`,
+    };
+    const news = withWeights.flatMap((item) => item.news).filter((item, index, all) => item.url && all.findIndex((other) => other.url === item.url) === index).sort((a, b) => String(b.publishedAt).localeCompare(String(a.publishedAt))).slice(0, 14);
     const moodScore = news.reduce((sum, item) => sum + (item.sentiment === "positive" ? 1 : item.sentiment === "negative" ? -1 : 0), 0);
-    const dcaFit = volatility >= .28 || largestWeight >= .25 || hhi >= .16;
-    return Response.json({ asOf: end, totalValue, positions: withWeights, unavailable: results.filter((item) => "error" in item), scenarios, historicalReturns, portfolioVolatility: volatility, largestWeight, concentrationIndex: hhi, news, marketMood: moodScore >= 2 ? "More positive headlines" : moodScore <= -2 ? "More cautious headlines" : "Mixed headlines", strategy: { fit: dcaFit ? "DCA may fit this portfolio better" : "A blended approach may fit this portfolio", explanation: dcaFit ? "This portfolio has meaningful price swings or concentration. Spreading new money over time can reduce the risk of choosing one unlucky entry day, but it may lag if prices rise steadily." : "The portfolio is reasonably spread out based on this file. Historically, investing sooner gives money more time in the market, while DCA can make the path easier to tolerate." }, methodology: "Historical ranges use weighted rolling returns from available daily prices. Long-period return bars use the holdings that had data for the full period shown. They are examples, not forecasts. News tone uses simple headline keywords and can miss context." }, { headers: { "Cache-Control": "private, max-age=300" } });
+
+    const publicPositions = withWeights.map(({ prices: _prices, oneYearReturns: _oneYearReturns, news: _news, periodReturns: _periodReturns, ...item }) => item);
+    return Response.json({
+      asOf: end, totalValue, positions: publicPositions, unavailable: results.filter((item) => "error" in item), scenarioCurves, historicalReturns,
+      portfolioVolatility, largestWeight, concentrationIndex, sectors,
+      risk: { score: riskScore, label: riskScore >= 70 ? "High" : riskScore >= 45 ? "Moderate" : "Lower", realisticDownside, largestHistoricalHoldingDrawdown: Math.abs(withWeights.reduce((sum, item) => sum + item.weight * item.maxDrawdown, 0)) },
+      diversification: { score: diversificationScore, label: diversificationScore >= 75 ? "Broad" : diversificationScore >= 50 ? "Moderate" : "Concentrated", effectiveHoldings, knownSectorWeight },
+      news, marketMood: moodScore >= 2 ? "More positive headlines" : moodScore <= -2 ? "More cautious headlines" : "Mixed headlines", strategy,
+      methodology: "Rates use the current market-value weights and each holding’s adjusted-price history. Scenario rates change with the selected horizon; where too few full rolling periods exist, a history-adjusted model narrows uncertainty over longer horizons. Historical growth reconstructs today’s allocation backward and is not a record of what you actually owned. Forecasts are ranges, not promises.",
+    }, { headers: { "Cache-Control": "private, max-age=300" } });
   } catch (error) {
     return Response.json({ error: error instanceof Error ? error.message : "The portfolio could not be analyzed." }, { status: 500 });
   }
