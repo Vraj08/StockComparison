@@ -308,6 +308,8 @@ footer { margin-top: 1.2rem; border-top: 1px solid var(--border); padding: 1.4re
 .timeline-grid strong { display: block; margin: .4rem 0; font-family: var(--font-mono); font-size: 1.2rem; }
 .timeline-grid p, .timeline-empty { margin: 0; color: var(--muted-foreground); font-size: .7rem; line-height: 1.5; }
 .timeline-empty { padding: 1.1rem; }
+.timeline-plain-math { margin: 0 1.1rem 1.1rem; padding: .85rem 1rem; border-radius: 10px; background: var(--muted); color: var(--muted-foreground); font-size: .75rem; line-height: 1.55; }
+.timeline-plain-math strong { color: var(--foreground); }
 .score-stack article > p { margin: .65rem 0 0; color: var(--muted-foreground); font-size: .69rem; line-height: 1.45; }
 .score-math { grid-column: 1 / -1; border: 1px solid var(--border); border-radius: 11px; background: var(--muted); }
 .score-math summary, .downside-estimate details summary, .formula-panel summary, .scenario-meaning summary { display: flex; justify-content: space-between; align-items: center; gap: .5rem; padding: .75rem .85rem; cursor: pointer; color: var(--foreground); font-size: .73rem; font-weight: 750; list-style: none; }
@@ -333,6 +335,10 @@ details[open] > summary svg { transform: rotate(180deg); }
 .downside-estimate details { margin: .7rem 0; border: 1px solid color-mix(in srgb,#ff8294 28%,var(--border)); border-radius: 9px; background: color-mix(in srgb,var(--background) 65%,transparent); }
 .downside-estimate details p { padding: 0 .8rem; font-size: .69rem; }
 .downside-estimate details p:last-child { padding-bottom: .7rem; }
+.downside-signals { display: grid; grid-template-columns: repeat(3,1fr); gap: .45rem; padding: 0 .75rem .65rem; }
+.downside-signals span { display: flex; flex-direction: column; padding: .55rem; border-radius: 8px; background: var(--muted); }
+.downside-signals b { color: var(--foreground); font-family: var(--font-mono); font-size: .82rem; }
+.downside-signals small { margin-top: .2rem; color: var(--muted-foreground); font-size: .62rem; line-height: 1.35; }
 .formula-panel { margin: 1rem 1.1rem 0; border: 1px solid color-mix(in srgb,var(--primary) 38%,var(--border)); border-radius: 12px; background: color-mix(in srgb,var(--primary) 5%,var(--background)); }
 .formula-panel > summary { padding: .9rem 1rem; font-size: .78rem; }
 .formula-panel > p { margin: 0; padding: 0 1rem 1rem; color: var(--muted-foreground); font-size: .72rem; line-height: 1.55; }
@@ -341,6 +347,18 @@ details[open] > summary svg { transform: rotate(180deg); }
 .formula-equation small { display: block; margin-top: .15rem; color: var(--muted-foreground); font-family: inherit; font-size: .61rem; }
 .formula-equation > b { color: var(--muted-foreground); }
 .formula-equation > strong { color: var(--primary); font-family: var(--font-mono); font-size: 1rem; }
+.plain-steps { display: grid; grid-template-columns: 1fr 1fr; gap: .6rem; padding: 0 1rem .9rem; }
+.plain-steps article { display: grid; grid-template-columns: 28px 1fr; gap: .65rem; padding: .75rem; border: 1px solid var(--border); border-radius: 10px; background: var(--background); }
+.plain-steps article > b { width: 28px; height: 28px; display: grid; place-items: center; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-size: .72rem; }
+.plain-steps strong { font-size: .76rem; }
+.plain-steps p { margin: .3rem 0 0; color: var(--muted-foreground); font-size: .68rem; line-height: 1.5; }
+.holding-math { margin: 0 1rem 1rem; overflow: hidden; border: 1px solid var(--border); border-radius: 10px; }
+.holding-math-head, .holding-math details > summary { display: grid; grid-template-columns: 1fr repeat(3,minmax(105px,.8fr)); gap: .5rem; align-items: center; padding: .65rem .75rem; }
+.holding-math-head { background: var(--muted); color: var(--muted-foreground); font-size: .65rem; font-weight: 700; }
+.holding-math details { border-top: 1px solid var(--border); }
+.holding-math details > summary { cursor: pointer; list-style: none; font-family: var(--font-mono); font-size: .72rem; }
+.holding-math details > summary span, .holding-math details > summary b { text-align: right; }
+.holding-math details > p { margin: 0; padding: .1rem .75rem .7rem; color: var(--muted-foreground); font-size: .67rem; line-height: 1.5; }
 .scenario-meaning { margin-top: .7rem; border-top: 1px solid var(--border); }
 .scenario-meaning summary { padding: .65rem 0 0; color: var(--muted-foreground); font-size: .68rem; }
 .scenario-meaning p { margin-top: .5rem; }
@@ -381,6 +399,9 @@ details[open] > summary svg { transform: rotate(180deg); }
   .sector-holdings > div { flex-direction: column; gap: .35rem; }
   .sector-holdings > div > span:last-child { text-align: left; }
   .growth-chart { height: 300px; }
+  .downside-signals, .plain-steps { grid-template-columns: 1fr; }
+  .holding-math { overflow-x: auto; }
+  .holding-math-head, .holding-math details > summary { min-width: 590px; }
 }
 
 /* ── Dividend Toggle & HYSA ── */

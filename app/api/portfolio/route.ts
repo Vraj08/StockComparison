@@ -9,7 +9,7 @@ type ScenarioKey = "worst" | "bear" | "base" | "bull" | "best";
 type ScenarioCurve = Record<ScenarioKey | "average" | "realistic", number> & {
   source: "rolling history" | "history-adjusted model";
   samples: number;
-  math: { base: number; average: number; historicalPrior: number; concentrationPenalty: number; baseWeight: number; averageWeight: number; priorWeight: number };
+  math: { allocationWeightedRate: number; riskAdjustment: number; oneYearPlanningRate: number; longTermReference: number; horizonBlend: number };
 };
 
 const clamp = (value: number, low: number, high: number) => Math.min(high, Math.max(low, value));
@@ -84,7 +84,7 @@ function rollingCagrs(prices: MarketPrice[], years: number) {
   return samples;
 }
 
-function makeScenarioCurve(items: Array<{ weight: number; prices: MarketPrice[]; oneYearReturns: number[] }>, years: number, concentrationIndex: number, portfolioVolatility: number): ScenarioCurve {
+function makeScenarioCurve(items: Array<{ weight: number; prices: MarketPrice[]; oneYearReturns: number[] }>, years: number, concentrationIndex: number, portfolioVolatility: number, allocationWeightedRate: number, riskAdjustment: number, oneYearPlanningRate: number): ScenarioCurve {
   const byHolding = items.map((item) => ({ weight: item.weight, values: rollingCagrs(item.prices, years) })).filter((item) => item.values.length);
   const coveredWeight = byHolding.reduce((sum, item) => sum + item.weight, 0);
   const sampleCount = byHolding.length ? Math.min(...byHolding.map((item) => item.values.length)) : 0;
@@ -110,13 +110,13 @@ function makeScenarioCurve(items: Array<{ weight: number; prices: MarketPrice[];
   const q = (p: number, z: number) => historical ? percentile(portfolioSamples, p) : modeled(z);
   const average = historical ? mean(portfolioSamples) : modeled(0);
   const base = q(.5, 0);
-  const diversificationPenalty = Math.max(0, concentrationIndex - .12) * .12;
-  const realistic = clamp((base * .55) + (average * .25) + (.07 * .20) - diversificationPenalty, -.2, .35);
+  const horizonBlend = Math.min(1, 10 / Math.max(1, years));
+  const realistic = clamp(.07 + (oneYearPlanningRate - .07) * horizonBlend, -.10, .18);
   return {
     worst: q(.05, -1.65), bear: q(.25, -.68), base, bull: q(.75, .68), best: q(.95, 1.65),
     average: clamp(average, -.5, .8), realistic,
     source: historical ? "rolling history" : "history-adjusted model", samples: portfolioSamples.length,
-    math: { base, average: clamp(average, -.5, .8), historicalPrior: .07, concentrationPenalty: diversificationPenalty, baseWeight: .55, averageWeight: .25, priorWeight: .20 },
+    math: { allocationWeightedRate, riskAdjustment, oneYearPlanningRate, longTermReference: .07, horizonBlend },
   };
 }
 
@@ -141,11 +141,17 @@ export async function POST(request: Request) {
           const rolling = rollingYearReturns(data.prices);
           const oneYearReturn = returnPrice(latest) / returnPrice(yearStart) - 1;
           const historicalMedian = percentile(rolling, .5);
-          const nextYearBase = clamp(.55 * historicalMedian + .25 * oneYearReturn + .20 * .07, -.5, .8);
+          const first = data.prices[0];
+          const elapsedYears = Math.max(1, (new Date(`${latest.date}T00:00:00Z`).getTime() - new Date(`${first.date}T00:00:00Z`).getTime()) / (365.2425 * 86400000));
+          const longTermGrowth = Math.pow(returnPrice(latest) / returnPrice(first), 1 / elapsedYears) - 1;
+          const recentForPlan = clamp(oneYearReturn, -.5, .5);
+          const typicalForPlan = clamp(historicalMedian, -.3, .35);
+          const longTermForPlan = clamp(longTermGrowth, -.15, .25);
+          const nextYearBase = clamp(.30 * recentForPlan + .45 * typicalForPlan + .25 * longTermForPlan, -.2, .25);
           return {
             ticker: data.ticker, name: context.profileName || data.name, quantity: position.quantity, netInvested: Number(position.netInvested || 0), firstInvestmentDate: position.firstInvestmentDate || null, latestPrice: latest.close, priceDate: latest.date,
             marketValue: position.quantity * latest.close, oneYearReturn, volatility: annualVolatility(data.prices), maxDrawdown: maxDrawdown(data.prices), periodReturns: periodReturns(data.prices),
-            nextYear: { low: clamp(percentile(rolling, .25), -.8, 1.5), base: nextYearBase, high: clamp(percentile(rolling, .75), -.8, 1.5) },
+            nextYear: { low: clamp(percentile(rolling, .25), -.8, 1.5), base: nextYearBase, high: clamp(percentile(rolling, .75), -.8, 1.5), math: { recentGrowth: recentForPlan, typicalYear: typicalForPlan, longTermGrowth: longTermForPlan, recentWeight: .30, typicalWeight: .45, longTermWeight: .25 } },
             sector: context.sector, industry: context.industry, news: context.news, prices: data.prices, oneYearReturns: rolling,
           };
         } catch (error) { return { ticker: position.ticker, quantity: position.quantity, error: error instanceof Error ? error.message : "Data unavailable" }; }
@@ -169,9 +175,12 @@ export async function POST(request: Request) {
     const portfolioVolatility = withWeights.reduce((sum, item) => sum + item.weight * item.volatility, 0);
     const largestWeight = withWeights[0]?.weight || 0;
     const concentrationIndex = withWeights.reduce((sum, item) => sum + item.weight ** 2, 0);
+    const allocationWeightedRate = withEntryReturns.reduce((sum, item) => sum + item.weight * item.nextYear.base, 0);
+    const riskAdjustment = clamp(.5 * portfolioVolatility ** 2 + Math.max(0, largestWeight - .25) * .08, 0, .10);
+    const oneYearPlanningRate = clamp(allocationWeightedRate - riskAdjustment, -.10, .18);
     const scenarioCurves = Object.fromEntries(Array.from({ length: 50 }, (_, index) => {
       const horizon = index + 1;
-      return [String(horizon), makeScenarioCurve(withEntryReturns, horizon, concentrationIndex, portfolioVolatility)];
+      return [String(horizon), makeScenarioCurve(withEntryReturns, horizon, concentrationIndex, portfolioVolatility, allocationWeightedRate, riskAdjustment, oneYearPlanningRate)];
     }));
 
     const historicalReturns = PERIODS.map((years) => {
@@ -224,6 +233,17 @@ export async function POST(request: Request) {
       weightedAnnualizedSinceFirstBuy: annualizedCoverage ? annualizedPositions.reduce((sum, item) => sum + (item.weight / annualizedCoverage) * item.annualizedSinceFirstBuy!, 0) : null,
       annualizedCoverage,
     };
+    const investedPositions = withEntryReturns.filter((item) => item.netInvested > 0);
+    const netInvested = investedPositions.reduce((sum, item) => sum + item.netInvested, 0);
+    const investedValue = investedPositions.reduce((sum, item) => sum + item.marketValue, 0);
+    const investedCoverage = investedPositions.reduce((sum, item) => sum + item.weight, 0);
+    Object.assign(timeline, {
+      netInvested: netInvested || null,
+      investedValue: netInvested ? investedValue : null,
+      investedCoverage,
+      currentGain: netInvested ? investedValue - netInvested : null,
+      currentReturnOnCashInvested: netInvested ? investedValue / netInvested - 1 : null,
+    });
     const publicPositions = withEntryReturns.map(({ prices: _prices, oneYearReturns: _oneYearReturns, news: _news, periodReturns: _periodReturns, ...item }) => item);
     return Response.json({
       asOf: end, totalValue, positions: publicPositions, unavailable: results.filter((item) => "error" in item), scenarioCurves, historicalReturns,
