@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { calculateMonth } from "../lib/dca-core.mjs";
+import { calculateDipBuyStrategy, calculateMonth } from "../lib/dca-core.mjs";
 const rows = (values) => values.map((close, i) => ({ date: `2026-03-${String(i + 2).padStart(2, "0")}`, open: close, high: close, low: close, close, adjustedClose: close, volume: 1 }));
 for (const days of [19, 20, 21, 22, 23]) test(`${days}-trading-day month preserves the first-day budget`, () => { const result = calculateMonth(rows(Array(days).fill(100))); assert.equal(result.tradingDays, days); assert.ok(Math.abs(result.dailyInvestment * days - 100) < 1e-10); assert.ok(Math.abs(result.dcaShares - 1) < 1e-10); });
 test("rising prices favor the first-day share count", () => assert.ok(calculateMonth(rows([100, 110, 120])).dcaShares < 1));
@@ -12,3 +12,5 @@ test("short-history ETF month calculates only returned trading days", () => asse
 test("split-adjusted input stays internally consistent", () => { const result = calculateMonth(rows([50, 51, 52, 49])); assert.ok(result.dcaShares > 0); assert.ok(Number.isFinite(result.dcaEndValue)); });
 test("custom monthly budget is used for both timing methods", () => { const result = calculateMonth(rows([100, 110, 120]), "close", 500); assert.equal(result.monthlyBudget, 500); assert.equal(result.lumpShares, 5); assert.equal(result.dailyInvestment, 500 / 3); assert.ok(result.dcaShares < result.lumpShares); });
 test("invalid custom budget falls back to one first-day share", () => { const result = calculateMonth(rows([80, 82]), "close", 0); assert.equal(result.monthlyBudget, 80); assert.equal(result.lumpShares, 1); });
+test("weekly DCA invests the full monthly budget across one purchase per week", () => { const result = calculateMonth(rows(Array(20).fill(100)), "close", 500); assert.ok(result.weeklyPurchaseCount >= 3); assert.ok(Math.abs(result.weeklyInvestment * result.weeklyPurchaseCount - 500) < 1e-10); assert.ok(Math.abs(result.weeklyShares - 5) < 1e-10); });
+test("custom dip percentage changes whether reserve cash is deployed", () => { const prices = rows([100, 94, 96]); const groups = [{ month: "2026-03", prices }]; assert.equal(calculateDipBuyStrategy(groups, "close", 100, 5).dipMonthCount, 1); assert.equal(calculateDipBuyStrategy(groups, "close", 100, 10).dipMonthCount, 0); });

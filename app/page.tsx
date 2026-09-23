@@ -20,7 +20,7 @@ import type { MarketDataResult, MarketPrice } from "@/lib/market-data";
 import { PortfolioDashboard } from "@/components/portfolio-dashboard";
 
 type MonthRow = MonthCalculation & { month: string; monthLabel: string };
-type SortKey = "month" | "monthlyBudget" | "firstPrice" | "tradingDays" | "dcaAverageCost" | "dcaShares" | "lumpShares" | "differenceShares" | "dcaGain" | "lumpGain" | "dcaEndValue" | "lumpEndValue";
+type SortKey = "month" | "monthlyBudget" | "firstPrice" | "tradingDays" | "dcaAverageCost" | "dcaShares" | "lumpShares" | "differenceShares" | "dcaGain" | "lumpGain" | "dcaEndValue" | "lumpEndValue" | "weeklyAverageCost" | "weeklyShares" | "weeklyGain" | "weeklyEndValue";
 const today = new Date().toISOString().slice(0, 10);
 const yearsAgo = (years: number) => { const d = new Date(); d.setFullYear(d.getFullYear() - years); return d.toISOString().slice(0, 10); };
 const money = (value: number) => new Intl.NumberFormat("en-US", { style: "currency", currency: "USD", minimumFractionDigits: 2, maximumFractionDigits: 2 }).format(value);
@@ -30,7 +30,7 @@ const shortDate = (value: string) => new Date(`${value}T00:00:00`).toLocaleDateS
 const monthName = (value: string) => new Date(`${value}-01T00:00:00`).toLocaleDateString("en-US", { month: "long", year: "numeric" });
 const pct = (value: number) => `${value >= 0 ? "+" : ""}${value.toFixed(1)}%`;
 
-function downloadCsv(name: string, rows: Array<Record<string, string | number | null>>) {
+function downloadCsv(name: string, rows: Array<Record<string, unknown>>) {
   if (!rows.length) return;
   const headers = Object.keys(rows[0]);
   const escape = (value: unknown) => `"${String(value ?? "").replaceAll('"', '""')}"`;
@@ -58,6 +58,10 @@ function monthCell(row: MonthRow, key: SortKey) {
   if (key === "tradingDays") return row.tradingDays;
   if (key === "dcaAverageCost") return money(row.dcaAverageCost);
   if (key === "dcaShares") return shares(row.dcaShares);
+  if (key === "weeklyAverageCost") return money(row.weeklyAverageCost);
+  if (key === "weeklyShares") return shares(row.weeklyShares);
+  if (key === "weeklyEndValue") return money(row.weeklyEndValue);
+  if (key === "weeklyGain") return <span className={row.weeklyGain >= 0 ? "positive" : "negative"}>{signedMoney(row.weeklyGain)}</span>;
   if (key === "lumpShares") return shares(row.lumpShares);
   if (key === "dcaEndValue") return money(row.dcaEndValue);
   if (key === "lumpEndValue") return money(row.lumpEndValue);
@@ -143,7 +147,9 @@ export default function Home() {
   const [useDividendAdjusted, setUseDividendAdjusted] = useState(true);
   const [monthlyInvestment, setMonthlyInvestment] = useState("");
   const [dipBuyAmount, setDipBuyAmount] = useState("100");
-  const [methods, setMethods] = useState({ daily: true, start: true });
+  const [dipPercentage, setDipPercentage] = useState("5");
+  const [customYears, setCustomYears] = useState("");
+  const [methods, setMethods] = useState({ daily: true, weekly: false, start: true });
   const [showDipBuy, setShowDipBuy] = useState(false);
   const [data, setData] = useState<MarketDataResult | null>(null);
   const [loading, setLoading] = useState(true);
@@ -155,6 +161,7 @@ export default function Home() {
   const [view, setView] = useState<"portfolio" | "research">("portfolio");
   const customMonthlyBudget = Number(monthlyInvestment) > 0 ? Number(monthlyInvestment) : undefined;
   const dipBudget = Number(dipBuyAmount) > 0 ? Number(dipBuyAmount) : 100;
+  const dipPercent = Math.min(95, Math.max(.1, Number(dipPercentage) || 5));
   // When dividend-adjusted is on, override priceField to use adjustedClose
   const effectivePriceField: PriceField = useDividendAdjusted ? "adjustedClose" : priceField;
 
@@ -169,7 +176,9 @@ export default function Home() {
     finally { setLoading(false); }
   }, [ticker, start, end]);
 
-  useEffect(() => { void load("VOO", start, end); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  // Initial data load is intentionally performed once when the research view mounts.
+  // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
+  useEffect(() => { void load("VOO", start, end); }, []);
   useEffect(() => { document.documentElement.dataset.theme = dark ? "dark" : "light"; }, [dark]);
 
   const months = useMemo<MonthRow[]>(() => {
@@ -186,8 +195,8 @@ export default function Home() {
     data.prices.forEach((row) => { const key = row.date.slice(0, 7); groups.set(key, [...(groups.get(key) || []), row]); });
     const monthGroups = [...groups.entries()].map(([month, prices]) => ({ month, prices }));
     if (!monthGroups.length) return null;
-    return calculateDipBuyStrategy(monthGroups, effectivePriceField, dipBudget);
-  }, [data, effectivePriceField, dipBudget]);
+    return calculateDipBuyStrategy(monthGroups, effectivePriceField, dipBudget, dipPercent);
+  }, [data, effectivePriceField, dipBudget, dipPercent]);
 
   // HYSA estimate: simulate the reserve sitting in a 3% APY savings account
   const dipHysaValue = useMemo(() => {
@@ -205,20 +214,24 @@ export default function Home() {
   }, [dipBuyResult]);
 
   const cumulative = useMemo(() => {
-    let invested = 0, dcaShares = 0, lumpShares = 0;
+    let invested = 0, dcaShares = 0, weeklyShares = 0, lumpShares = 0;
     return months.map((row) => {
       invested += row.monthlyBudget;
       dcaShares += row.dcaShares;
+      weeklyShares += row.weeklyShares;
       lumpShares += row.lumpShares;
       return {
         date: row.lastDate,
         marketPrice: row.lastPrice,
         averageCost: invested / dcaShares,
+        weeklyAverageCost: invested / weeklyShares,
         startAverageCost: invested / lumpShares,
         dcaValue: dcaShares * row.lastPrice,
+        weeklyValue: weeklyShares * row.lastPrice,
         lumpValue: lumpShares * row.lastPrice,
         invested,
         dcaShares,
+        weeklyShares,
         lumpShares,
       };
     });
@@ -228,7 +241,7 @@ export default function Home() {
   const cumulativeWithDip = useMemo(() => {
     if (!dipBuyResult) return cumulative.map((r) => ({ ...r, dipValue: undefined, dipInvested: undefined, dipAverageCost: undefined }));
     // Map dip month results by lastDate
-    const dipByDate = new Map<string, any>();
+    const dipByDate = new Map<string, (typeof dipBuyResult.monthResults)[number]>();
     for (const m of dipBuyResult.monthResults) {
       dipByDate.set(m.lastDate, m);
     }
@@ -263,6 +276,7 @@ export default function Home() {
   const monthColumns = useMemo(() => {
     const columns: { key: SortKey; label: string }[] = [{ key: "month", label: "Month" }, { key: "monthlyBudget", label: "Monthly amount" }, { key: "firstPrice", label: "First-day price" }, { key: "tradingDays", label: "Days" }];
     if (methods.daily) columns.push({ key: "dcaAverageCost", label: "DCA cost" }, { key: "dcaShares", label: "DCA shares" }, { key: "dcaGain", label: "DCA gain/loss" }, { key: "dcaEndValue", label: "DCA ended at" });
+    if (methods.weekly) columns.push({ key: "weeklyAverageCost", label: "Weekly cost" }, { key: "weeklyShares", label: "Weekly shares" }, { key: "weeklyGain", label: "Weekly gain/loss" }, { key: "weeklyEndValue", label: "Weekly ended at" });
     if (methods.start) columns.push({ key: "lumpShares", label: "Start shares" }, { key: "lumpGain", label: "Start gain/loss" }, { key: "lumpEndValue", label: "Start ended at" });
     if (methods.daily && methods.start) columns.push({ key: "differenceShares", label: "Share difference" });
     return columns;
@@ -274,23 +288,28 @@ export default function Home() {
     const dcaWins = months.filter((row) => row.differenceShares > 0).length;
     const firstDayWins = months.filter((row) => row.differenceShares < 0).length;
     const tieMonths = months.length - dcaWins - firstDayWins;
-    const winner = dcaAdvantage > .01 ? "Spreading purchases won" : dcaAdvantage < -.01 ? "Buying at the start won" : "The two methods were nearly tied";
-    const why = dcaAdvantage > .01
-      ? `Prices often fell after the month began, so the same dollars bought more shares later. DCA bought more shares in ${dcaWins} of ${months.length} months.`
-      : dcaAdvantage < -.01
-        ? `Prices often rose after the month began, so buying at the start locked in lower prices. The first-day purchase won in ${firstDayWins} of ${months.length} months.`
-        : `Prices moved both ways. DCA won ${dcaWins} months, the first-day purchase won ${firstDayWins}, and ${tieMonths} were effectively tied.`;
-    return { dcaAdvantage, winner, why, dcaWins, firstDayWins };
-  }, [months, summary]);
+    const candidates = [
+      methods.start ? { label: "Month-start", value: summary.lumpValue } : null,
+      methods.weekly ? { label: "Weekly DCA", value: summary.weeklyValue } : null,
+      methods.daily ? { label: "Daily DCA", value: summary.dcaValue } : null,
+    ].filter((item): item is { label: string; value: number } => Boolean(item)).sort((a,b)=>b.value-a.value);
+    const leader = candidates[0]; const runnerUp = candidates[1];
+    const winner = candidates.length > 1 ? `${leader.label} finished highest` : `Your ${leader.label} result`;
+    const why = candidates.length > 1
+      ? `${leader.label} ended at ${money(leader.value)}, ${money(Math.max(0, leader.value-(runnerUp?.value||0)))} above the next selected method. Daily purchases beat month-start shares in ${dcaWins} of ${months.length} months; month-start won ${firstDayWins}, with ${tieMonths} ties.`
+      : `You invested ${money(summary.invested)} using ${leader.label} and ended at ${money(leader.value)}.`;
+    return { dcaAdvantage, winner, why, dcaWins, firstDayWins, leader, difference: runnerUp ? leader.value-runnerUp.value : leader.value-summary.invested };
+  }, [methods, months, summary]);
 
-  const setRange = (monthsBack: number | "max") => {
+  const setRange = (yearsBack: number | "max") => {
     const nextEnd = today; const d = new Date();
-    const nextStart = monthsBack === "max" ? "1970-01-01" : (d.setMonth(d.getMonth() - monthsBack), d.toISOString().slice(0, 10));
+    const nextStart = yearsBack === "max" ? "1900-01-01" : (d.setFullYear(d.getFullYear() - yearsBack), d.toISOString().slice(0, 10));
     setStart(nextStart); setEnd(nextEnd); void load(ticker, nextStart, nextEnd);
   };
+  const applyCustomYears = () => { const value = Math.min(100, Math.max(1, Math.round(Number(customYears)))); if (Number.isFinite(value)) setRange(value); };
   const onSubmit = (event: FormEvent) => { event.preventDefault(); void load(); };
   const changeSort = (key: SortKey) => setSort((current) => ({ key, direction: current.key === key ? current.direction === 1 ? -1 : 1 : 1 }));
-  const toggleMethod = (key: "daily" | "start") => setMethods((current) => current[key] && Object.values(current).filter(Boolean).length === 1 ? current : { ...current, [key]: !current[key] });
+  const toggleMethod = (key: "daily" | "weekly" | "start") => setMethods((current) => current[key] && Object.values(current).filter(Boolean).length === 1 ? current : { ...current, [key]: !current[key] });
 
   useEffect(() => {
     const context = (document as Document & { modelContext?: { registerTool?: (tool: unknown, options?: { signal?: AbortSignal }) => void | Promise<void> } }).modelContext;
@@ -307,16 +326,19 @@ export default function Home() {
   const dcaEndValue = summary?.dcaValue ?? 0;
   const dcaInvested = summary?.invested ?? 0;
   const dcaGain = dcaEndValue - dcaInvested;
+  const weeklyEndValue = summary?.weeklyValue ?? 0;
+  const weeklyInvested = summary?.invested ?? 0;
+  const weeklyGain = weeklyEndValue - weeklyInvested;
 
   return <main className="app-shell">
     <header className="topbar"><div className="brand"><span className="brand-mark"><TrendingUp /></span><div><strong>DCA Research Lab</strong><span>Investing explained simply</span></div></div><nav className="view-switch" aria-label="Choose a workspace"><button className={view === "portfolio" ? "active" : ""} onClick={() => setView("portfolio")}><BriefcaseBusiness/> My portfolio</button><button className={view === "research" ? "active" : ""} onClick={() => setView("research")}><LineChartIcon/> Stock research</button></nav><div className="header-actions"><span className="live-pill"><i /> Market data on demand</span><Button variant="ghost" size="icon" aria-label="Toggle color theme" onClick={() => setDark((value) => !value)}>{dark ? <Sun /> : <Moon />}</Button></div></header>
     {view === "portfolio" ? <PortfolioDashboard /> : <>
     <section className="workspace">
-      <div className="page-heading"><div><span className="eyebrow"><Sparkles /> One stock or ETF at a time</span><h1>Compare three ways to invest your money</h1><p>Pick a ticker and time period. Compare investing monthly at the start, spreading it daily, or waiting for a 5% price dip to deploy extra cash.</p></div>{data && <div className="security-chip"><div><strong>{data.ticker}</strong><span>{data.name}</span></div><strong>{money(data.prices.at(-1)?.close || 0)}</strong><span>{shortDate(data.prices.at(-1)?.date || "")}</span></div>}</div>
+      <div className="page-heading"><div><span className="eyebrow"><Sparkles /> One stock or ETF at a time</span><h1>Compare four ways to invest your money</h1><p>Pick a ticker and time period. Compare month-start, weekly, daily, or a custom dip-wait strategy.</p></div>{data && <div className="security-chip"><div><strong>{data.ticker}</strong><span>{data.name}</span></div><strong>{money(data.prices.at(-1)?.close || 0)}</strong><span>{shortDate(data.prices.at(-1)?.date || "")}</span></div>}</div>
       <section className="control-panel">
         <form onSubmit={onSubmit} className="search-control"><label htmlFor="ticker">Ticker</label><div className="search-box"><Search /><Input id="ticker" value={ticker} onChange={(event) => setTicker(event.target.value.toUpperCase())} placeholder="Enter ticker" autoComplete="off"/><Button type="submit" disabled={loading}>{loading ? <LoaderCircle className="spin" /> : "Analyze"}</Button></div></form>
-        <div className="date-control"><label htmlFor="start">Start date</label><Input id="start" type="date" value={start} max={end} onChange={(event) => setStart(event.target.value)} /></div>
-        <div className="date-control"><label htmlFor="end">End date</label><Input id="end" type="date" value={end} min={start} max={today} onChange={(event) => setEnd(event.target.value)} /></div>
+        <div className="date-control"><label htmlFor="start">Start date</label><Input id="start" type="date" value={start} min="1900-01-01" max={end} onChange={(event) => setStart(event.target.value)} /></div>
+        <div className="date-control"><label htmlFor="end">End date</label><Input id="end" type="date" value={end} min="1900-01-01" max={today} onChange={(event) => setEnd(event.target.value)} /></div>
         <div className="date-control purchase-control"><label>Purchase price</label><Select value={priceField} onValueChange={(value) => setPriceField(value as PriceField)}><SelectTrigger><SelectValue /></SelectTrigger><SelectContent><SelectItem value="close">Daily close</SelectItem><SelectItem value="open">Daily open</SelectItem></SelectContent></Select></div>
         <div className="date-control monthly-control"><label htmlFor="monthly-investment">Monthly amount <em>optional</em></label><div className="money-input"><span>$</span><Input id="monthly-investment" type="number" min="0" step="25" inputMode="decimal" value={monthlyInvestment} onChange={(event)=>setMonthlyInvestment(event.target.value)} placeholder="Default"/></div></div>
       </section>
@@ -326,17 +348,19 @@ export default function Home() {
         <div className="method-options">
           <div><strong>Methods to show</strong><span>Mix and match to compare strategies side by side.</span></div>
           <button type="button" aria-pressed={methods.daily} className={methods.daily?"active":""} onClick={()=>toggleMethod("daily")}><i>{methods.daily&&<Check/>}</i><span><strong>Daily DCA</strong><small>Split the monthly amount across every trading day.</small></span></button>
+          <button type="button" aria-pressed={methods.weekly} className={methods.weekly?"active":""} onClick={()=>toggleMethod("weekly")}><i>{methods.weekly&&<Check/>}</i><span><strong>Weekly DCA</strong><small>Split the monthly amount across the first trading day of each week.</small></span></button>
           <button type="button" aria-pressed={methods.start} className={methods.start?"active":""} onClick={()=>toggleMethod("start")}><i>{methods.start&&<Check/>}</i><span><strong>Always In (Month-start)</strong><small>Invest 100% on the first trading day of every month.</small></span></button>
-          <button type="button" aria-pressed={showDipBuy} className={showDipBuy?"active dip-active":""} onClick={()=>setShowDipBuy((v)=>!v)}><i>{showDipBuy&&<Check/>}</i><span><strong>Dip-Wait 50/50</strong><small>50% in on day 1. Save the rest until the stock drops 5%.</small></span></button>
+          <button type="button" aria-pressed={showDipBuy} className={showDipBuy?"active dip-active":""} onClick={()=>setShowDipBuy((v)=>!v)}><i>{showDipBuy&&<Check/>}</i><span><strong>Dip-Wait 50/50</strong><small>50% in on day 1. Save the rest until the stock drops your chosen percentage.</small></span></button>
         </div>
         {showDipBuy && (
           <div className="dip-budget-row">
             <TrendingDown style={{width:16,color:"var(--primary)"}}/>
-            <span><strong>Dip-Wait monthly budget:</strong> 50% goes in on the 1st trading day; the other 50% waits and rolls over until a 5% dip occurs.</span>
+            <span><strong>Dip-Wait settings:</strong> 50% goes in on the first trading day; the other 50% waits until the stock falls {dipPercent}% from that month&apos;s starting price.</span>
             <div className="money-input" style={{width:140}}>
               <span>$</span>
               <Input type="number" min="0" step="25" inputMode="decimal" value={dipBuyAmount} onChange={(e)=>setDipBuyAmount(e.target.value)} placeholder="100"/>
             </div>
+            <label className="dip-percent-input"><span>Drop</span><Input aria-label="Dip trigger percentage" type="number" min="0.1" max="95" step="0.5" inputMode="decimal" value={dipPercentage} onChange={(e)=>setDipPercentage(e.target.value)}/><b>%</b></label>
           </div>
         )}
         <div className="dividend-toggle-row">
@@ -349,10 +373,10 @@ export default function Home() {
         <p>{customMonthlyBudget ? `Every month now uses ${money(customMonthlyBudget)} for a fair, same-dollar comparison.` : "No monthly amount entered: each month uses the original one-share-equivalent default automatically."}</p>
       </section>
 
-      <div className="quick-ranges">{[[1,"1M"],[3,"3M"],[6,"6M"],[12,"1Y"],[36,"3Y"],[60,"5Y"],[120,"10Y"],[180,"15Y"],[240,"20Y"],["max","MAX"]].map(([value,label]) => <button key={label} onClick={() => setRange(value as number | "max")}>{label}</button>)}<span>{useDividendAdjusted ? "📈 Dividend-adjusted prices: dividends are included in all returns." : priceField === "close" ? "Close uses each trading day's closing price." : "Open uses each trading day's opening price."}</span></div>
-      {error && <div className="error-banner"><CircleAlert /><div><strong>Couldn't load this analysis</strong><span>{error}</span></div><Button variant="outline" onClick={() => void load()}>Try again</Button></div>}
+      <div className="quick-ranges"><strong>Years:</strong>{[[1,"1"],[5,"5"],[10,"10"],[20,"20"],["max","MAX"]].map(([value,label]) => <button key={label} onClick={() => setRange(value as number | "max")}>{label}</button>)}<label className="custom-range"><Input aria-label="Custom number of years" type="number" min="1" max="100" step="1" value={customYears} onChange={(event)=>setCustomYears(event.target.value)} onKeyDown={(event)=>{if(event.key==="Enter")applyCustomYears()}} placeholder="Custom"/><Button type="button" variant="outline" size="sm" onClick={applyCustomYears}>Apply</Button></label><span>{useDividendAdjusted ? "📈 Dividend-adjusted prices: dividends are included in all returns." : priceField === "close" ? "Close uses each trading day's closing price." : "Open uses each trading day's opening price."}</span></div>
+      {error && <div className="error-banner"><CircleAlert /><div><strong>Couldn&apos;t load this analysis</strong><span>{error}</span></div><Button variant="outline" onClick={() => void load()}>Try again</Button></div>}
       {!error && <>
-        {researchSummary && summary && <section className={`research-verdict ${researchSummary.dcaAdvantage >= 0 ? "dca-win" : "early-win"}`}><div><span>Plain-English answer</span><h2>{methods.daily&&methods.start?researchSummary.winner:methods.daily?"Your daily DCA result":"Your month-start result"}</h2><p>{methods.daily&&methods.start?researchSummary.why:methods.daily?`You invested ${money(summary.invested)} by spreading each month's amount across trading days. It ended at ${money(summary.dcaValue)}, a ${signedMoney(summary.dcaValue-summary.invested)} gain or loss.`:`You invested ${money(summary.invested)} on each month's first trading day. It ended at ${money(summary.lumpValue)}, a ${signedMoney(summary.lumpValue-summary.invested)} gain or loss.`}</p></div><div className="verdict-number"><span>{methods.daily&&methods.start?"Difference at the end":"Ending value"}</span><strong className={methods.daily&&methods.start?(researchSummary.dcaAdvantage>=0?"positive":"negative"):(methods.daily?summary.dcaValue>=summary.invested:summary.lumpValue>=summary.invested)?"positive":"negative"}>{methods.daily&&methods.start?signedMoney(researchSummary.dcaAdvantage):money(methods.daily?summary.dcaValue:summary.lumpValue)}</strong><small>{methods.daily&&methods.start?(researchSummary.dcaAdvantage>=0?"Daily DCA finished ahead":"Month-start buying finished ahead"):`Using ${customMonthlyBudget?money(customMonthlyBudget):"the automatic default"} each month`}</small></div></section>}
+        {researchSummary && summary && <section className={`research-verdict ${researchSummary.leader.value >= summary.invested ? "dca-win" : "early-win"}`}><div><span>Plain-English answer</span><h2>{researchSummary.winner}</h2><p>{researchSummary.why}</p></div><div className="verdict-number"><span>{Object.values(methods).filter(Boolean).length>1?"Lead over next method":"Gain or loss"}</span><strong className={researchSummary.difference>=0?"positive":"negative"}>{signedMoney(researchSummary.difference)}</strong><small>{researchSummary.leader.label} · ending value {money(researchSummary.leader.value)}</small></div></section>}
 
         {/* ── Dip-buy verdict banner ── */}
         {showDipBuy && dipBuyResult && (
@@ -363,7 +387,7 @@ export default function Home() {
               <p>
                 You committed {money(dipBuyResult.totalCashCommitted)} over {dipBuyResult.monthResults.length} months ({money(dipBudget)}/month).
                 Of that, <strong>{money(dipBuyResult.totalInvested)}</strong> actually went into the market
-                ({dipBuyResult.dipMonthCount > 0 ? `a dip occurred ${dipBuyResult.dipMonthCount} time${dipBuyResult.dipMonthCount > 1 ? "s" : ""}: extra cash deployed then` : "no 5% dip occurred, so only the 50% first-day amounts were invested"}).
+                ({dipBuyResult.dipMonthCount > 0 ? `a ${dipPercent}% dip occurred ${dipBuyResult.dipMonthCount} time${dipBuyResult.dipMonthCount > 1 ? "s" : ""}: extra cash deployed then` : `no ${dipPercent}% dip occurred, so only the 50% first-day amounts were invested`}).
                 The remaining <strong>{money(dipBuyResult.totalReserveUndeployed)}</strong> is still sitting as cash.
               </p>
             </div>
@@ -419,7 +443,7 @@ export default function Home() {
           {showDipBuy && dipBuyResult && (
             <div className="scenario-box dip-wait-box">
               <span className="scenario-label"><TrendingDown style={{width:14,display:"inline",verticalAlign:"middle"}}/> Scenario 2: Dip-Wait 50/50</span>
-              <p className="scenario-desc">50% goes in on day 1 every month. The other 50% accumulates as cash and waits. The moment the stock drops 5% in any month, all the saved-up cash is deployed at that lower price.</p>
+              <p className="scenario-desc">50% goes in on day 1 every month. The other 50% accumulates as cash and waits. The moment the stock drops {dipPercent}% in any month, all the saved-up cash is deployed at that lower price.</p>
               <div className="scenario-facts">
                 <div>
                   <span>💼 Cash committed (total budget)</span>
@@ -506,6 +530,20 @@ export default function Home() {
               </div>
             </div>
           )}
+          {methods.weekly && summary && (
+            <div className="scenario-box weekly-dca-box">
+              <span className="scenario-label"><Calendar style={{width:14,display:"inline",verticalAlign:"middle"}}/> Scenario 4: Weekly DCA</span>
+              <p className="scenario-desc">Your monthly budget is divided equally across the first available trading day of each calendar week.</p>
+              <div className="scenario-facts">
+                <div><span>✅ Total invested</span><strong>{money(weeklyInvested)}</strong><em className="fact-explain">The same monthly budget as the other DCA methods.</em></div>
+                <div><span>📊 Shares accumulated</span><strong>{shares(summary.weeklyShares)}</strong><em className="fact-explain">Total fractional shares bought through weekly purchases.</em></div>
+                <div><span>⚖️ Avg cost per share</span><strong>{summary.weeklyShares > 0 ? money(weeklyInvested / summary.weeklyShares) : "-"}</strong><em className="fact-explain">Your dollar-weighted average weekly purchase price.</em></div>
+                <div><span>📈 Portfolio value today</span><strong className={weeklyGain >= 0 ? "positive" : "negative"}>{money(weeklyEndValue)}</strong><em className="fact-explain">What the weekly purchases are worth at the latest price.</em></div>
+                <div><span>Gain / Loss</span><strong className={weeklyGain >= 0 ? "positive" : "negative"}>{signedMoney(weeklyGain)}</strong><em className="fact-explain">Portfolio value minus the amount invested.</em></div>
+                <div><span>Return %</span><strong className={weeklyGain >= 0 ? "positive" : "negative"}>{weeklyInvested > 0 ? pct((weeklyGain / weeklyInvested) * 100) : "-"}</strong><em className="fact-explain">The total return from weekly purchases.</em></div>
+              </div>
+            </div>
+          )}
         </section>
 
         {/* ── Charts ── */}
@@ -573,6 +611,7 @@ export default function Home() {
                 let min = Infinity;
                 if (methods.start && summary && summary.lumpShares > 0) { const val = summary.invested/summary.lumpShares; if (val < min) { min = val; best = "Always-In"; } }
                 if (methods.daily && summary && summary.dcaShares > 0) { const val = summary.invested/summary.dcaShares; if (val < min) { min = val; best = "Daily DCA"; } }
+                if (methods.weekly && summary && summary.weeklyShares > 0) { const val = summary.invested/summary.weeklyShares; if (val < min) { min = val; best = "Weekly DCA"; } }
                 if (showDipBuy && dipBuyResult && dipBuyResult.totalShares > 0) { const val = dipBuyResult.totalInvested/dipBuyResult.totalShares; if (val < min) { min = val; best = "Dip-Wait"; } }
                 if (min === Infinity) return null;
                 return (
@@ -590,6 +629,7 @@ export default function Home() {
                   <Tooltip content={<CostTooltip />}/>
                   {methods.start&&<Line type="monotone" dataKey="startAverageCost" name="Always-In avg cost" stroke="#7ea6ff" strokeWidth={2.5} dot={false}/>}
                   {methods.daily&&<Line type="monotone" dataKey="averageCost" name="Daily DCA avg cost" stroke="#52e0c4" strokeWidth={2.5} dot={false}/>}
+                  {methods.weekly&&<Line type="monotone" dataKey="weeklyAverageCost" name="Weekly DCA avg cost" stroke="#be8cf5" strokeWidth={2.5} dot={false}/>}
                   {showDipBuy&&<Line type="monotone" dataKey="dipAverageCost" name="Dip-Wait avg cost" stroke="#f7a243" strokeWidth={2.5} dot={false}/>}
                 </LineChart>
               </ResponsiveContainer>
@@ -598,12 +638,13 @@ export default function Home() {
               <div className="interpret-legend">
                 {methods.start&&<span><i className="ci-dot" style={{background:"#7ea6ff"}}/> <strong>Blue line</strong> = Always-In (Month start)</span>}
                 {methods.daily&&<span><i className="ci-dot" style={{background:"#52e0c4"}}/> <strong>Teal line</strong> = Daily DCA</span>}
+                {methods.weekly&&<span><i className="ci-dot" style={{background:"#be8cf5"}}/> <strong>Purple line</strong> = Weekly DCA</span>}
                 {showDipBuy&&<span><i className="ci-dot" style={{background:"#f7a243"}}/> <strong>Amber line</strong> = Dip-Wait 50/50</span>}
               </div>
               <div className="interpret-takeaway">
                 <strong>📖 How to read this:</strong> Think of it as your &quot;average price paid per share&quot; race. The strategy with the lowest line was successfully buying the cheapest shares on average. 
                 {summary && (
-                  <> By the end of the period, {methods.start ? `Always-In locked in at ${money(summary.invested/summary.lumpShares)}, ` : ""}{methods.daily ? `Daily DCA locked in at ${money(summary.invested/summary.dcaShares)}, ` : ""}{showDipBuy && dipBuyResult?.totalShares ? `and Dip-Wait locked in at ${money(dipBuyResult.totalInvested/dipBuyResult.totalShares)}.` : ""}</>
+                  <> By the end of the period, {methods.start ? `Always-In locked in at ${money(summary.invested/summary.lumpShares)}, ` : ""}{methods.daily ? `Daily DCA locked in at ${money(summary.invested/summary.dcaShares)}, ` : ""}{methods.weekly ? `Weekly DCA locked in at ${money(summary.invested/summary.weeklyShares)}, ` : ""}{showDipBuy && dipBuyResult?.totalShares ? `and Dip-Wait locked in at ${money(dipBuyResult.totalInvested/dipBuyResult.totalShares)}.` : ""}</>
                 )}
               </div>
             </div>
@@ -615,7 +656,7 @@ export default function Home() {
               <div>
                 <span>{methods.daily&&methods.start?"Strategy comparison":showDipBuy?"Strategy comparison":"Your selected strategy"}</span>
                 <h2>How your money grew over time</h2>
-                <p>The dashed line is the total cash you put in. Any solid line above it means your investment is in profit. Below means it's currently at a loss.</p>
+                <p>The dashed line is the total cash you put in. Any solid line above it means your investment is in profit. Below means it&apos;s currently at a loss.</p>
               </div>
               <TrendingUp />
             </div>
@@ -641,6 +682,7 @@ export default function Home() {
                   <Area type="monotone" dataKey="invested" name="Total invested" stroke="#627083" strokeWidth={1.5} strokeDasharray="6 4" fill="transparent" dot={false}/>
                   {methods.start&&<Area type="monotone" dataKey="lumpValue" name="Always-In value" stroke="#7ea6ff" fill="url(#lumpGrad)" strokeWidth={2.5} dot={false}/>}
                   {methods.daily&&<Area type="monotone" dataKey="dcaValue" name="Daily DCA value" stroke="#52e0c4" fill="url(#dcaGrad)" strokeWidth={2.5} dot={false}/>}
+                  {methods.weekly&&<Area type="monotone" dataKey="weeklyValue" name="Weekly DCA value" stroke="#be8cf5" fill="transparent" strokeWidth={2.5} dot={false}/>}
                   {showDipBuy&&<Area type="monotone" dataKey="dipValue" name="Dip-Wait value" stroke="#f7a243" fill="url(#dipGrad)" strokeWidth={2.5} dot={false} connectNulls={false}/>}
                 </AreaChart>
               </ResponsiveContainer>
@@ -651,6 +693,7 @@ export default function Home() {
                 <span><i className="ci-dash" style={{background:"#627083"}}/> <strong>Grey dashed line</strong> = your break-even baseline (the money you deposited)</span>
                 {methods.start&&<span><i className="ci-dot" style={{background:"#7ea6ff"}}/> <strong>Blue line</strong> = Always-In portfolio</span>}
                 {methods.daily&&<span><i className="ci-dot" style={{background:"#52e0c4"}}/> <strong>Teal line</strong> = Daily DCA portfolio</span>}
+                {methods.weekly&&<span><i className="ci-dot" style={{background:"#be8cf5"}}/> <strong>Purple line</strong> = Weekly DCA portfolio</span>}
                 {showDipBuy&&<span><i className="ci-dot" style={{background:"#f7a243"}}/> <strong>Amber line</strong> = Dip-Wait portfolio</span>}
               </div>
               <div className="interpret-takeaway">
@@ -658,6 +701,7 @@ export default function Home() {
                 <ul>
                   {methods.start && <li><strong>Always-In</strong> ended at <strong>{money(alwaysInEndValue)}</strong> (a {pct((alwaysInGain / alwaysInInvested) * 100)} return).</li>}
                   {methods.daily && summary && <li><strong>Daily DCA</strong> ended at <strong>{money(dcaEndValue)}</strong> (a {pct((dcaGain / dcaInvested) * 100)} return).</li>}
+                  {methods.weekly && summary && <li><strong>Weekly DCA</strong> ended at <strong>{money(weeklyEndValue)}</strong> (a {pct((weeklyGain / weeklyInvested) * 100)} return).</li>}
                   {showDipBuy && dipBuyResult && <li><strong>Dip-Wait</strong> ended at <strong>{money(dipBuyResult.endValue)}</strong> on its deployed cash (a {dipBuyResult.totalInvested > 0 ? pct((dipGain / dipBuyResult.totalInvested) * 100) : "0%"} return).</li>}
                 </ul>
               </div>
@@ -667,7 +711,7 @@ export default function Home() {
 
         {/* ── Month-by-month table ── */}
         <section className="panel table-panel">
-          <div className="panel-heading"><div><span>Month by month</span><h2>Your monthly investment results</h2><p>One row per month. Each row shows what happened if you invested during that month using the methods you selected above. Click any row to see the full daily breakdown.</p></div><div className="export-actions"><Button variant="outline" size="sm" onClick={() => downloadCsv(`${data?.ticker || "ticker"}-monthly-dca.csv`, months.map(({ daily, ...row }) => row))}><Download /> Monthly CSV</Button><Button variant="outline" size="sm" onClick={() => data && downloadCsv(`${data.ticker}-prices.csv`, data.prices)}><Download /> Price history</Button></div></div>
+          <div className="panel-heading"><div><span>Month by month</span><h2>Your monthly investment results</h2><p>One row per month. Each row shows what happened if you invested during that month using the methods you selected above. Click any row to see the full daily breakdown.</p></div><div className="export-actions"><Button variant="outline" size="sm" onClick={() => downloadCsv(`${data?.ticker || "ticker"}-monthly-dca.csv`, months.map((month) => Object.fromEntries(Object.entries(month).filter(([key]) => key !== "daily"))))}><Download /> Monthly CSV</Button><Button variant="outline" size="sm" onClick={() => data && downloadCsv(`${data.ticker}-prices.csv`, data.prices)}><Download /> Price history</Button></div></div>
           <div className="table-explainer">
             <strong>📋 What does each column mean?</strong>
             <ul>
@@ -678,6 +722,7 @@ export default function Home() {
               {methods.daily && <li><strong>DCA cost:</strong> the average price you paid per share by spreading purchases across all days in that month.</li>}
               {methods.daily && <li><strong>DCA shares:</strong> total shares bought by splitting the budget across every trading day.</li>}
               {methods.daily && <li><strong>DCA gain/loss:</strong> how much profit or loss those shares made by month-end.</li>}
+              {methods.weekly && <li><strong>Weekly columns:</strong> the cost, shares, gain/loss, and ending value from buying on the first trading day of each week.</li>}
               {methods.start && <li><strong>Start shares:</strong> shares bought by putting the full amount in on day 1.</li>}
               {methods.start && <li><strong>Start gain/loss:</strong> profit or loss from buying all on day 1.</li>}
               {methods.daily && methods.start && <li><strong>Share difference:</strong> how many more (or fewer) shares Daily DCA got vs. buying all on day 1. Green = DCA won that month.</li>}
@@ -690,17 +735,17 @@ export default function Home() {
         {showDipBuy && dipBuyResult && (
           <section className="panel table-panel" style={{marginTop:"1rem"}}>
             <div className="panel-heading">
-              <div><span>Dip-Wait 50/50 — month by month</span><h2>When did the 5% dip trigger?</h2><p>One row per month. Amber/highlighted rows = a dip occurred that month and accumulated cash was deployed. Plain rows = no dip, only the 50% day-1 purchase went in.</p></div>
+              <div><span>Dip-Wait 50/50 — month by month</span><h2>When did the {dipPercent}% dip trigger?</h2><p>One row per month. Amber/highlighted rows = a dip occurred that month and accumulated cash was deployed. Plain rows = no dip, only the 50% day-1 purchase went in.</p></div>
               <TrendingDown style={{width:20,color:"#f7a243"}}/>
             </div>
             <div className="table-explainer">
               <strong>📋 What does each column mean?</strong>
               <ul>
                 <li><strong>Month</strong> — the calendar month.</li>
-                <li><strong>First-day price</strong> — the stock price on day 1 of that month. This is the baseline used to detect a 5% dip.</li>
+                <li><strong>First-day price</strong> — the stock price on day 1 of that month. This is the baseline used to detect your {dipPercent}% dip.</li>
                 <li><strong>50% invested day 1</strong> — the half-budget that always goes in on the first trading day, no matter what.</li>
-                <li><strong>Dip triggered?</strong> — whether the stock ever fell 5% below day 1&apos;s price at any point during the month.</li>
-                <li><strong>Dip price</strong> — the actual price at which the dip was detected (the first day it crossed -5%).</li>
+                <li><strong>Dip triggered?</strong> — whether the stock ever fell {dipPercent}% below day 1&apos;s price at any point during the month.</li>
+                <li><strong>Dip price</strong> — the actual price at which the dip was detected.</li>
                 <li><strong>Cash deployed</strong> — the total accumulated reserve that was invested on the dip day. This is all the saved-up 50% from previous months plus this month&apos;s 50%, deployed at once.</li>
                 <li><strong>Reserve after month</strong> — how much cash is still sitting undeployed and waiting for the next dip.</li>
                 <li><strong>Shares so far</strong> — the total number of shares you own across all months up to this point.</li>
@@ -751,20 +796,20 @@ export default function Home() {
     </section>
 
     {/* ── Detail sheet: DCA/Lump ── */}
-    <Sheet open={Boolean(selected)} onOpenChange={(open) => !open && setSelected(null)}><SheetContent className="detail-sheet"><SheetHeader><SheetTitle>{selected?.monthLabel} · {methods.daily ? "Daily purchases" : "Month-start purchase"}</SheetTitle><SheetDescription>{selected && `${data?.ticker} · ${selected.tradingDays} actual trading days · ${methods.daily ? `${money(selected.dailyInvestment)} invested per day` : `${money(selected.monthlyBudget)} invested on the first trading day`}`}</SheetDescription></SheetHeader>{selected && <div className="detail-content"><div className="detail-stats"><StatCard label="Monthly investment" value={money(selected.monthlyBudget)} detail={customMonthlyBudget?"Your custom amount":"Automatic first-day share equivalent"}/>{methods.daily&&<StatCard label="DCA shares" value={shares(selected.dcaShares)} detail={`${selected.differenceShares >= 0 ? "+" : ""}${shares(selected.differenceShares)} vs month-start shares`} tone={selected.differenceShares >= 0 ? "positive" : "negative"}/>}{methods.daily&&<StatCard label="DCA average cost" value={money(selected.dcaAverageCost)} detail={`Average market price: ${money(selected.averageMarketPrice)}`}/>}{methods.start&&<StatCard label="Month-start shares" value={shares(selected.lumpShares)} detail={`Bought at ${money(selected.firstPrice)}`}/>}{methods.start&&<StatCard label="Month-start ended at" value={money(selected.lumpEndValue)} detail={signedMoney(selected.lumpGain)} tone={selected.lumpGain >= 0 ? "positive" : "negative"}/>}</div>{methods.daily&&<Button variant="outline" size="sm" onClick={() => downloadCsv(`${data?.ticker}-${selected.month}-daily-dca.csv`, selected.daily)}><Download /> Export daily CSV</Button>}{methods.daily&&<Table><TableHeader><TableRow><TableHead>Date</TableHead><TableHead>Open</TableHead><TableHead>Close</TableHead><TableHead>Price used</TableHead><TableHead>Daily investment</TableHead><TableHead>Shares</TableHead><TableHead>Cumulative investment</TableHead><TableHead>Cumulative shares</TableHead><TableHead>Running cost</TableHead></TableRow></TableHeader><TableBody>{selected.daily.map((row) => <TableRow key={row.date}><TableCell>{shortDate(row.date)}</TableCell><TableCell>{money(row.open)}</TableCell><TableCell>{money(row.close)}</TableCell><TableCell>{money(row.priceUsed)}</TableCell><TableCell>{money(row.dailyInvestment)}</TableCell><TableCell>{shares(row.sharesPurchased)}</TableCell><TableCell>{money(row.cumulativeInvestment)}</TableCell><TableCell>{shares(row.cumulativeShares)}</TableCell><TableCell>{money(row.runningAverageCost)}</TableCell></TableRow>)}</TableBody></Table>}</div>}</SheetContent></Sheet>
+    <Sheet open={Boolean(selected)} onOpenChange={(open) => !open && setSelected(null)}><SheetContent className="detail-sheet"><SheetHeader><SheetTitle>{selected?.monthLabel} · Purchase details</SheetTitle><SheetDescription>{selected && `${data?.ticker} · ${selected.tradingDays} trading days · ${selected.weeklyPurchaseCount} weekly purchases`}</SheetDescription></SheetHeader>{selected && <div className="detail-content"><div className="detail-stats"><StatCard label="Monthly investment" value={money(selected.monthlyBudget)} detail={customMonthlyBudget?"Your custom amount":"Automatic first-day share equivalent"}/>{methods.daily&&<StatCard label="Daily DCA shares" value={shares(selected.dcaShares)} detail={`${selected.differenceShares >= 0 ? "+" : ""}${shares(selected.differenceShares)} vs month-start shares`} tone={selected.differenceShares >= 0 ? "positive" : "negative"}/>}{methods.daily&&<StatCard label="Daily average cost" value={money(selected.dcaAverageCost)} detail={`Average market price: ${money(selected.averageMarketPrice)}`}/>}{methods.weekly&&<StatCard label="Weekly DCA shares" value={shares(selected.weeklyShares)} detail={`${selected.weeklyPurchaseCount} purchases in this month`} tone={selected.weeklyGain >= 0 ? "positive" : "negative"}/>}{methods.weekly&&<StatCard label="Weekly average cost" value={money(selected.weeklyAverageCost)} detail={`${money(selected.weeklyInvestment)} per weekly purchase`}/>}{methods.start&&<StatCard label="Month-start shares" value={shares(selected.lumpShares)} detail={`Bought at ${money(selected.firstPrice)}`}/>}{methods.start&&<StatCard label="Month-start ended at" value={money(selected.lumpEndValue)} detail={signedMoney(selected.lumpGain)} tone={selected.lumpGain >= 0 ? "positive" : "negative"}/>}</div><div className="export-actions">{methods.daily&&<Button variant="outline" size="sm" onClick={() => downloadCsv(`${data?.ticker}-${selected.month}-daily-dca.csv`, selected.daily)}><Download /> Daily CSV</Button>}{methods.weekly&&<Button variant="outline" size="sm" onClick={() => downloadCsv(`${data?.ticker}-${selected.month}-weekly-dca.csv`, selected.weekly)}><Download /> Weekly CSV</Button>}</div>{methods.daily&&<Table><TableHeader><TableRow><TableHead>Date</TableHead><TableHead>Open</TableHead><TableHead>Close</TableHead><TableHead>Price used</TableHead><TableHead>Daily investment</TableHead><TableHead>Shares</TableHead><TableHead>Cumulative investment</TableHead><TableHead>Cumulative shares</TableHead><TableHead>Running cost</TableHead></TableRow></TableHeader><TableBody>{selected.daily.map((row) => <TableRow key={row.date}><TableCell>{shortDate(row.date)}</TableCell><TableCell>{money(row.open)}</TableCell><TableCell>{money(row.close)}</TableCell><TableCell>{money(row.priceUsed)}</TableCell><TableCell>{money(row.dailyInvestment)}</TableCell><TableCell>{shares(row.sharesPurchased)}</TableCell><TableCell>{money(row.cumulativeInvestment)}</TableCell><TableCell>{shares(row.cumulativeShares)}</TableCell><TableCell>{money(row.runningAverageCost)}</TableCell></TableRow>)}</TableBody></Table>}{methods.weekly&&<Table><TableHeader><TableRow><TableHead>Weekly purchase date</TableHead><TableHead>Price used</TableHead><TableHead>Investment</TableHead><TableHead>Shares</TableHead><TableHead>Running cost</TableHead></TableRow></TableHeader><TableBody>{selected.weekly.map((row) => <TableRow key={row.date}><TableCell>{shortDate(row.date)}</TableCell><TableCell>{money(row.priceUsed)}</TableCell><TableCell>{money(row.weeklyInvestment)}</TableCell><TableCell>{shares(row.sharesPurchased)}</TableCell><TableCell>{money(row.runningAverageCost)}</TableCell></TableRow>)}</TableBody></Table>}</div>}</SheetContent></Sheet>
 
     {/* ── Detail sheet: Dip-buy month ── */}
     <Sheet open={Boolean(selectedDipMonth)} onOpenChange={(open) => !open && setSelectedDipMonth(null)}>
       <SheetContent className="detail-sheet">
         <SheetHeader>
           <SheetTitle>{selectedDipMonth ? monthName(selectedDipMonth.month) : ""} · Dip-Wait 50/50</SheetTitle>
-          <SheetDescription>{selectedDipMonth && `${data?.ticker} · First-day price: ${money(selectedDipMonth.firstPrice)} · ${selectedDipMonth.dipOccurred ? `Dip triggered on ${shortDate(selectedDipMonth.dipDate!)} at ${money(selectedDipMonth.dipPrice!)}` : "No 5% dip this month"}`}</SheetDescription>
+          <SheetDescription>{selectedDipMonth && `${data?.ticker} · First-day price: ${money(selectedDipMonth.firstPrice)} · ${selectedDipMonth.dipOccurred ? `Dip triggered on ${shortDate(selectedDipMonth.dipDate!)} at ${money(selectedDipMonth.dipPrice!)}` : `No ${dipPercent}% dip this month`}`}</SheetDescription>
         </SheetHeader>
         {selectedDipMonth && (
           <div className="detail-content">
             <div className="detail-stats">
               <StatCard label="First-day investment (50%)" value={money(selectedDipMonth.halfBudgetInvested)} detail={`Bought at ${money(selectedDipMonth.firstPrice)}`}/>
-              <StatCard label="Dip triggered?" value={selectedDipMonth.dipOccurred ? "Yes ✓" : "No"} detail={selectedDipMonth.dipOccurred ? `On ${shortDate(selectedDipMonth.dipDate!)} — price hit ${money(selectedDipMonth.dipPrice!)}` : "Stock never fell 5% from the first-day price"} tone={selectedDipMonth.dipOccurred ? "positive" : "neutral"}/>
+              <StatCard label="Dip triggered?" value={selectedDipMonth.dipOccurred ? "Yes ✓" : "No"} detail={selectedDipMonth.dipOccurred ? `On ${shortDate(selectedDipMonth.dipDate!)} — price hit ${money(selectedDipMonth.dipPrice!)}` : `Stock never fell ${dipPercent}% from the first-day price`} tone={selectedDipMonth.dipOccurred ? "positive" : "neutral"}/>
               <StatCard label="Cash deployed at dip" value={selectedDipMonth.dipAmountDeployed > 0 ? money(selectedDipMonth.dipAmountDeployed) : "—"} detail={selectedDipMonth.dipShares > 0 ? `Bought ${shares(selectedDipMonth.dipShares)} shares at the dip` : "No cash deployed this month"}/>
               <StatCard label="Reserve carried forward" value={money(selectedDipMonth.reserveAfterMonth)} detail="Waiting for the next dip opportunity"/>
               <StatCard label="Total shares accumulated" value={shares(selectedDipMonth.totalSharesSoFar)} detail="Running total across all months"/>

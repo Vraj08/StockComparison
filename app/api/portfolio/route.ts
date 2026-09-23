@@ -10,6 +10,7 @@ type ScenarioCurve = Record<ScenarioKey | "average" | "realistic", number> & {
   source: "holding history and current growth";
   samples: number;
   math: { allocationWeightedRate: number; riskAdjustment: number; planningRate: number };
+  compoundedTotals: Record<ScenarioKey | "average" | "realistic", number>;
 };
 
 const clamp = (value: number, low: number, high: number) => Math.min(high, Math.max(low, value));
@@ -88,38 +89,53 @@ function makeScenarioCurve(items: Array<{ weight: number; forecastByHorizon: Rec
   const forecast = (item: typeof items[number]) => item.forecastByHorizon[String(years)];
   const weighted = (key: ScenarioKey | "average") => items.reduce((sum, item) => sum + item.weight * forecast(item).outcomes[key], 0);
   const samples = items.reduce((sum, item) => sum + forecast(item).samples, 0);
-  return {
+  const rates = {
     worst: weighted("worst"), bear: weighted("bear"), base: weighted("base"), bull: weighted("bull"), best: weighted("best"),
     average: weighted("average"), realistic: planningRate,
+  };
+  const compoundedTotals = Object.fromEntries(
+    Object.entries(rates).map(([key, rate]) => [key, Math.pow(1 + Math.max(-0.99, rate), years) - 1])
+  ) as Record<ScenarioKey | "average" | "realistic", number>;
+  return {
+    ...rates,
     source: "holding history and current growth", samples,
     math: { allocationWeightedRate, riskAdjustment, planningRate },
+    compoundedTotals,
   };
 }
 
 function holdingForecast(prices: MarketPrice[], oneYearReturn: number, volatility: number, years: number) {
   const first = prices[0], latest = prices.at(-1)!;
   const elapsedYears = Math.max(1, (new Date(`${latest.date}T00:00:00Z`).getTime() - new Date(`${first.date}T00:00:00Z`).getTime()) / (365.2425 * 86400000));
-  const longTermGrowth = clamp(Math.pow(returnPrice(latest) / returnPrice(first), 1 / elapsedYears) - 1, -.15, .25);
+  const rawHistoricalCagr = Math.pow(returnPrice(latest) / returnPrice(first), 1 / elapsedYears) - 1;
+  const maxAllowableGrowth = clamp(0.10 + 0.60 / Math.sqrt(years), 0.10, 0.50);
+  const longTermGrowth = clamp(rawHistoricalCagr, -.25, maxAllowableGrowth);
   const history = rollingCagrs(prices, years);
   const annualHistory = rollingYearReturns(prices);
   const annualMedian = annualHistory.length ? percentile(annualHistory, .5) : longTermGrowth;
   const historyValue = (p: number) => history.length >= 4
     ? percentile(history, p)
     : longTermGrowth + (percentile(annualHistory.length ? annualHistory : [longTermGrowth], p) - longTermGrowth) / Math.sqrt(Math.max(1, years));
-  const historicalGrowth = clamp(historyValue(.5), -.25, .30);
-  const recentGrowth = clamp(oneYearReturn, -.5, .5);
+  const historicalGrowth = clamp(historyValue(.5), -.35, maxAllowableGrowth);
+  const recentGrowth = clamp(oneYearReturn, -.75, 1.25);
   const recentWeight = clamp(.30 / Math.sqrt(years), .05, .30);
   const longTermWeight = .30;
   const historicalWeight = 1 - recentWeight - longTermWeight;
   const beforeRisk = recentWeight * recentGrowth + historicalWeight * historicalGrowth + longTermWeight * longTermGrowth;
-  const riskDeduction = clamp(.20 * volatility ** 2 / Math.sqrt(years), 0, .05);
-  const blendedOutcome = (p: number) => clamp(recentWeight * recentGrowth + historicalWeight * clamp(historyValue(p), -.60, .80) + longTermWeight * longTermGrowth, -.60, .80);
+  const riskDeduction = clamp(.20 * volatility ** 2 / Math.sqrt(years), 0, .08);
+  const blendedOutcome = (p: number) => clamp(recentWeight * recentGrowth + historicalWeight * clamp(historyValue(p), -.75, 1.25) + longTermWeight * longTermGrowth, -.75, 1.25);
   const outcomes = {
     worst: blendedOutcome(.05), bear: blendedOutcome(.25), base: blendedOutcome(.50), bull: blendedOutcome(.75), best: blendedOutcome(.95),
-    average: clamp(recentWeight * recentGrowth + historicalWeight * (history.length >= 4 ? mean(history) : annualMedian) + longTermWeight * longTermGrowth, -.60, .80),
+    average: clamp(recentWeight * recentGrowth + historicalWeight * (history.length >= 4 ? mean(history) : annualMedian) + longTermWeight * longTermGrowth, -.75, 1.25),
   };
+  const annualRate = clamp(beforeRisk - riskDeduction, -.30, maxAllowableGrowth);
+  const compoundedTotal = Math.pow(1 + Math.max(-.99, annualRate), years) - 1;
+  const historicalCompoundedTotal = Math.pow(1 + Math.max(-.99, rawHistoricalCagr), years) - 1;
   return {
-    annualRate: clamp(beforeRisk - riskDeduction, -.20, .25), historicalGrowth, recentGrowth, longTermGrowth,
+    annualRate, historicalGrowth, recentGrowth, longTermGrowth,
+    historicalCagr: rawHistoricalCagr,
+    compoundedTotal,
+    historicalCompoundedTotal,
     recentWeight, historicalWeight, longTermWeight, riskDeduction,
     outcomes,
     source: history.length >= 4 ? `${years}-year periods from this holding` : `this holding’s yearly returns adjusted for ${years} years`,
@@ -153,9 +169,13 @@ export async function POST(request: Request) {
             return [String(horizon), holdingForecast(data.prices, oneYearReturn, volatility, horizon)];
           }));
           const nextYearBase = forecastByHorizon["1"].annualRate;
+          const histPeriods = periodReturns(data.prices);
+          const elapsedYears = Math.max(1, (new Date(`${latest.date}T00:00:00Z`).getTime() - new Date(`${data.prices[0].date}T00:00:00Z`).getTime()) / (365.2425 * 86400000));
+          const historicalCagr = Math.pow(returnPrice(latest) / returnPrice(data.prices[0]), 1 / elapsedYears) - 1;
           return {
             ticker: data.ticker, name: context.profileName || data.name, quantity: position.quantity, netInvested: Number(position.netInvested || 0), firstInvestmentDate: position.firstInvestmentDate || null, latestPrice: latest.close, priceDate: latest.date,
-            marketValue: position.quantity * latest.close, oneYearReturn, volatility, maxDrawdown: maxDrawdown(data.prices), periodReturns: periodReturns(data.prices),
+            marketValue: position.quantity * latest.close, oneYearReturn, volatility, maxDrawdown: maxDrawdown(data.prices), periodReturns: histPeriods,
+            historicalCagr, fiveYearReturn: histPeriods["5"]?.total ?? null, tenYearReturn: histPeriods["10"]?.total ?? null,
             nextYear: { low: clamp(percentile(rolling, .25), -.8, 1.5), base: nextYearBase, high: clamp(percentile(rolling, .75), -.8, 1.5) }, forecastByHorizon,
             sector: context.sector, industry: context.industry, news: context.news, prices: data.prices, oneYearReturns: rolling,
           };
@@ -185,7 +205,7 @@ export async function POST(request: Request) {
       const horizon = index + 1;
       const allocationWeightedRate = withEntryReturns.reduce((sum, item) => sum + item.weight * item.forecastByHorizon[String(horizon)].annualRate, 0);
       const riskAdjustment = baseRiskAdjustment / Math.sqrt(horizon);
-      const planningRate = clamp(allocationWeightedRate - riskAdjustment, -.10, .18);
+      const planningRate = clamp(allocationWeightedRate - riskAdjustment, -.15, .35);
       return [String(horizon), makeScenarioCurve(withEntryReturns, horizon, allocationWeightedRate, riskAdjustment, planningRate)];
     }));
 
@@ -254,7 +274,8 @@ export async function POST(request: Request) {
       currentGain: netInvested ? investedValue - netInvested : null,
       currentReturnOnCashInvested: netInvested ? investedValue / netInvested - 1 : null,
     });
-    const publicPositions = withEntryReturns.map(({ prices: _prices, oneYearReturns: _oneYearReturns, news: _news, periodReturns: _periodReturns, ...item }) => item);
+    const privatePositionKeys = new Set(["prices", "oneYearReturns", "news"]);
+    const publicPositions = withEntryReturns.map((item) => Object.fromEntries(Object.entries(item).filter(([key]) => !privatePositionKeys.has(key))));
     return Response.json({
       asOf: end, totalValue, positions: publicPositions, unavailable: results.filter((item) => "error" in item), scenarioCurves, historicalReturns,
       portfolioVolatility, largestWeight, concentrationIndex, sectors, timeline,
