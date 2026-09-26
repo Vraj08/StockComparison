@@ -21,7 +21,7 @@ export async function POST() {
     
     const request = {
       user: { client_user_id: 'dca-research-user' },
-      client_name: 'DCA Research Lab',
+      client_name: 'Portfolio Lab',
       products: [Products.Investments],
       country_codes: [CountryCode.Us],
       language: 'en',

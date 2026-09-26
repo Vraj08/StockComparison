@@ -1,0 +1,3 @@
+export type WithdrawalInputs = { balance: number; monthlySpending: number; inflation: number; annualReturn: number; currentAge: number; startAge: number; endAge: number };
+export type WithdrawalRow = { age: number; year: number; monthly: number; annual: number; openingBalance: number; withdrawn: number; growth: number; shortfall: number; closingBalance: number };
+export function calculateWithdrawalPlan(inputs: WithdrawalInputs): { rows: WithdrawalRow[]; firstMonthly: number; nextMonthly: number; requiredBalance: number; additionalNeeded: number; endingBalance: number; totalPlanned: number; totalWithdrawn: number; totalShortfall: number; depletionMonth: number | null };

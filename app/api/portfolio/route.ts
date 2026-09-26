@@ -64,7 +64,7 @@ const sentiment = (title: string) => {
 async function getTickerContext(ticker: string) {
   try {
     const url = `https://query2.finance.yahoo.com/v1/finance/search?q=${encodeURIComponent(ticker)}&quotesCount=5&newsCount=6&enableFuzzyQuery=false&enableResearchReports=false`;
-    const response = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 DCAResearchLab/1.0", Accept: "application/json" } });
+    const response = await fetch(url, { headers: { "User-Agent": "Mozilla/5.0 PortfolioLab/1.0", Accept: "application/json" } });
     if (!response.ok) return { news: [], sector: "Unclassified", industry: "", profileName: "" };
     const payload = await response.json() as { news?: NewsItem[]; quotes?: SearchQuote[] };
     const quote = (payload.quotes || []).find((item) => item.symbol?.toUpperCase() === ticker.toUpperCase());

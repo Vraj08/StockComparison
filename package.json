@@ -10,7 +10,7 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint . --ignore-pattern .next",
-    "test": "node --test --experimental-test-isolation=none tests/dca.test.mjs"
+    "test": "node --test --experimental-test-isolation=none tests/dca.test.mjs tests/portfolio.test.mjs tests/withdrawal.test.mjs"
   },
   "dependencies": {
     "class-variance-authority": "0.7.1",

@@ -1,0 +1,131 @@
+@layer base {
+  :root {
+    --background: #f8fafc;
+    --foreground: #0f172a;
+
+    --card: #ffffff;
+    --card-foreground: #0f172a;
+
+    --popover: #ffffff;
+    --popover-foreground: #0f172a;
+
+    --primary: #2563eb;
+    --primary-foreground: #ffffff;
+
+    --secondary: #f1f5f9;
+    --secondary-foreground: #1e293b;
+
+    --muted: #f1f5f9;
+    --muted-foreground: #64748b;
+
+    --accent: #f1f5f9;
+    --accent-foreground: #1e293b;
+
+    --destructive: #ef4444;
+    --destructive-foreground: #f8fafc;
+
+    --border: #e2e8f0;
+    --input: #e2e8f0;
+    --ring: #2563eb;
+
+    /* Sleek, professional charts */
+    --positive: #059669;
+    --negative: #dc2626;
+    --positive-soft: #d1fae5;
+    --negative-soft: #fee2e2;
+
+    --chart-1: #2563eb; /* Blue */
+    --chart-2: #0284c7; /* Light Blue */
+    --chart-3: #f59e0b; /* Amber */
+    --chart-4: #6366f1; /* Indigo */
+    --chart-5: #dc2626; /* Red */
+    --chart-6: #059669; /* Emerald */
+
+    --grid: #e2e8f0;
+    
+    --radius: 0.75rem;
+    --surface-shadow: 0 4px 6px -1px rgb(0 0 0 / 0.05), 0 2px 4px -2px rgb(0 0 0 / 0.05);
+  }
+
+  [data-theme="dark"], .dark {
+    /* Safe fallback if dark mode ever enabled, but we enforce light for now */
+    --background: #0f172a;
+    --foreground: #f8fafc;
+    --card: #1e293b;
+    --border: #334155;
+    --grid: #334155;
+  }
+}
+
+/* Base Typography */
+body {
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  letter-spacing: -0.01em;
+  font-size: 15px; /* Elegant, balanced default */
+  color: var(--foreground);
+  background-color: var(--background);
+}
+
+h1, h2, h3, h4, h5, h6, .heading {
+  letter-spacing: -0.02em;
+  font-weight: 600;
+  color: var(--foreground);
+}
+
+/* Component overrides for premium feel */
+.stat-card, .panel, .scenario-box, .scenario, .upload-card {
+  transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1), box-shadow 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  box-shadow: var(--surface-shadow);
+  background-color: var(--card);
+}
+
+.stat-card:hover, .scenario-box:hover, .scenario:hover, .upload-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 0 4px 6px -4px rgb(0 0 0 / 0.1);
+  border-color: color-mix(in srgb, var(--primary) 30%, var(--border));
+}
+
+/* Beautiful scrollbar */
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 99px; border: 2px solid var(--background); }
+::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+
+/* Recharts overrides */
+.recharts-cartesian-grid-horizontal line, .recharts-cartesian-grid-vertical line {
+  stroke: var(--grid);
+}
+
+.recharts-tooltip-wrapper {
+  outline: none !important;
+}
+
+/* Topbar glass-like but subtle and professional */
+.topbar, header {
+  background: color-mix(in srgb, var(--background) 90%, transparent) !important;
+  backdrop-filter: blur(8px) !important;
+  border-bottom: 1px solid var(--border) !important;
+}
+
+/* Fix workspace padding */
+.workspace {
+  width: 100%;
+  max-width: 1400px;
+  margin: 0 auto;
+  padding: 2.5rem 2rem 4rem; /* Ensure padding on all sides */
+}
+
+@media (max-width: 768px) {
+  .workspace {
+    padding: 1.5rem 1rem 3rem;
+  }
+}
+
+/* Table container fix */
+.financials-table-scroll {
+  width: 100%;
+  overflow-x: auto;
+  padding-bottom: 1rem;
+}

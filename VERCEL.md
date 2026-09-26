@@ -1,4 +1,4 @@
-# Complete Step-by-Step Guide: Hosting DCA Research Lab on Vercel
+# Complete Step-by-Step Guide: Hosting Portfolio Lab on Vercel
 
 This Next.js application is fully optimized for **Vercel** with Turbopack, zero environment variable requirements for core features, and hardened HTTP headers.
 
@@ -97,7 +97,7 @@ Your app is now live in production!
 
 Once deployed:
 1. Open your live Vercel URL.
-2. Under **DCA Research Lab**, type `NVDA` or `SPY` and click **Analyze Monthly DCA**.
+2. Under **Portfolio Lab**, type `NVDA` or `SPY` and click **Analyze Monthly DCA**.
 3. Under **Portfolio Dashboard**, drag and drop your brokerage CSV or test holding file.
 4. Move the **Years** slider to 10, 20, 30, or 50 years and observe:
    - The **Annual Rate (%/year)**.

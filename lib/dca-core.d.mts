@@ -2,8 +2,8 @@ import type { MarketPrice } from "./market-data";
 export type PriceField = "open" | "close" | "adjustedClose";
 export type DailyPurchase = MarketPrice & { priceUsed: number; dailyInvestment: number; sharesPurchased: number; cumulativeInvestment: number; cumulativeShares: number; runningAverageCost: number };
 export type WeeklyPurchase = MarketPrice & { priceUsed: number; weeklyInvestment: number; sharesPurchased: number; cumulativeInvestment: number; cumulativeShares: number; runningAverageCost: number };
-export type MonthCalculation = { firstDate: string; lastDate: string; firstPrice: number; lastPrice: number; tradingDays: number; monthlyBudget: number; dailyInvestment: number; dcaShares: number; lumpShares: number; dcaAverageCost: number; differenceShares: number; dcaEndValue: number; lumpEndValue: number; dcaGain: number; lumpGain: number; weeklyInvestment: number; weeklyPurchaseCount: number; weeklyShares: number; weeklyAverageCost: number; weeklyDifferenceShares: number; weeklyEndValue: number; weeklyGain: number; averageMarketPrice: number; daily: DailyPurchase[]; weekly: WeeklyPurchase[] };
-export function calculateMonth(prices: MarketPrice[], priceField?: PriceField, monthlyBudgetOverride?: number): MonthCalculation;
+export type MonthCalculation = { purchaseDay: number; purchaseDate: string; purchasePrice: number; firstDate: string; lastDate: string; firstPrice: number; lastPrice: number; tradingDays: number; monthlyBudget: number; dailyInvestment: number; dcaShares: number; lumpShares: number; dcaAverageCost: number; differenceShares: number; dcaEndValue: number; lumpEndValue: number; dcaGain: number; lumpGain: number; weeklyInvestment: number; weeklyPurchaseCount: number; weeklyShares: number; weeklyAverageCost: number; weeklyDifferenceShares: number; weeklyEndValue: number; weeklyGain: number; averageMarketPrice: number; daily: DailyPurchase[]; weekly: WeeklyPurchase[] };
+export function calculateMonth(prices: MarketPrice[], priceField?: PriceField, monthlyBudgetOverride?: number, purchaseDay?: number): MonthCalculation;
 
 export type DipBuyMonthResult = {
   month: string;
