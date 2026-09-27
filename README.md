@@ -290,40 +290,40 @@ The package name in `package.json` is `dca-research-lab`, while the visible appl
 
 ```mermaid
 flowchart TB
-    U[User Browser]
+    U["User Browser"]
 
-    subgraph CLIENT[Client-side React UI]
-        NAV[Workspace Navigation]
-        PORT[Portfolio Dashboard]
-        DCA[DCA Research]
-        FIN[Company Financials]
-        INF[Inflation Calculator]
-        WD[Withdrawal Planner]
-        CSV[Browser CSV Parser]
+    subgraph CLIENT["Client-side React UI"]
+        NAV["Workspace Navigation"]
+        PORT["Portfolio Dashboard"]
+        DCA["DCA Research"]
+        FIN["Company Financials"]
+        INF["Inflation Calculator"]
+        WD["Withdrawal Planner"]
+        CSV["Browser CSV Parser"]
     end
 
-    subgraph NEXT[Next.js Server / API Routes]
-        MARKET[/api/market]
-        PAPI[/api/portfolio]
-        FAPI[/api/financials]
-        PLINK[/api/plaid/create-link-token]
-        PEX[/api/plaid/exchange-token]
-        PHOLD[/api/plaid/holdings]
+    subgraph NEXT["Next.js Server / API Routes"]
+        MARKET["/api/market"]
+        PAPI["/api/portfolio"]
+        FAPI["/api/financials"]
+        PLINK["/api/plaid/create-link-token"]
+        PEX["/api/plaid/exchange-token"]
+        PHOLD["/api/plaid/holdings"]
     end
 
-    subgraph CORE[Local Calculation Modules]
-        DCACORE[lib/dca-core.mjs]
-        WCORE[lib/withdrawal-plan.mjs]
-        FINCORE[lib/financials.ts]
-        MD[lib/market-data.ts]
-        SEC[lib/sec-data.ts]
+    subgraph CORE["Local Calculation Modules"]
+        DCACORE["lib/dca-core.mjs"]
+        WCORE["lib/withdrawal-plan.mjs"]
+        FINCORE["lib/financials.ts"]
+        MD["lib/market-data.ts"]
+        SEC["lib/sec-data.ts"]
     end
 
-    subgraph EXTERNAL[External Data Providers]
-        YCHART[Yahoo Finance Chart API]
-        YSEARCH[Yahoo Finance Search / News]
-        EDGAR[SEC EDGAR / Company Facts]
-        PLAID[Plaid Investments API]
+    subgraph EXTERNAL["External Data Providers"]
+        YCHART["Yahoo Finance Chart API"]
+        YSEARCH["Yahoo Finance Search / News"]
+        EDGAR["SEC EDGAR / Company Facts"]
+        PLAID["Plaid Investments API"]
     end
 
     U --> NAV
